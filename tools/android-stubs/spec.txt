@@ -1,0 +1,122 @@
+//// android/os/Parcelable.java
+package android.os; public interface Parcelable {}
+//// android/os/Bundle.java
+package android.os; public class Bundle {}
+//// android/os/Looper.java
+package android.os; public class Looper { public static native Looper getMainLooper(); }
+//// android/os/Handler.java
+package android.os; public class Handler { public Handler(Looper l){} public native boolean post(Runnable r); public native boolean postDelayed(Runnable r,long d); public native void removeCallbacks(Runnable r); public native void removeCallbacksAndMessages(Object o); }
+//// android/os/LocaleList.java
+package android.os; public class LocaleList { public LocaleList(java.util.Locale... l){} }
+//// android/net/Uri.java
+package android.net; public class Uri implements android.os.Parcelable {}
+//// android/content/SharedPreferences.java
+package android.content; public interface SharedPreferences { String getString(String k,String d); int getInt(String k,int d); boolean getBoolean(String k,boolean d); Editor edit(); interface Editor { Editor putString(String k,String v); Editor putInt(String k,int v); Editor putBoolean(String k,boolean v); void apply(); } }
+//// android/content/ActivityNotFoundException.java
+package android.content; public class ActivityNotFoundException extends RuntimeException {}
+//// android/content/ContentResolver.java
+package android.content; public class ContentResolver { public native java.io.InputStream openInputStream(android.net.Uri u) throws java.io.FileNotFoundException; public native java.io.OutputStream openOutputStream(android.net.Uri u,String m) throws java.io.FileNotFoundException; }
+//// android/content/Intent.java
+package android.content; public class Intent { public static final String ACTION_OPEN_DOCUMENT="a",ACTION_CREATE_DOCUMENT="b",ACTION_SEND="c",CATEGORY_OPENABLE="d",EXTRA_TITLE="e",EXTRA_STREAM="f"; public static final int FLAG_GRANT_READ_URI_PERMISSION=1; public Intent(String a){} public Intent(Context c,Class<?> k){} public native Intent putExtra(String k,String v); public native Intent putExtra(String k,android.os.Parcelable v); public native String getStringExtra(String k); public native android.net.Uri getData(); public native Intent addCategory(String c); public native Intent setType(String t); public native Intent addFlags(int f); public static native Intent createChooser(Intent i,CharSequence t); }
+//// android/content/Context.java
+package android.content; public abstract class Context { public static final int MODE_PRIVATE=0; public native android.content.res.Resources getResources(); public final native String getString(int id); public final native String getString(int id,Object... a); public native SharedPreferences getSharedPreferences(String n,int m); public native Context getApplicationContext(); public native java.io.File getFilesDir(); public native java.io.File getCacheDir(); public native ContentResolver getContentResolver(); public native Context createConfigurationContext(android.content.res.Configuration c); public native String getPackageName(); }
+//// android/content/res/ColorStateList.java
+package android.content.res; public class ColorStateList { public static native ColorStateList valueOf(int c); }
+//// android/content/res/Configuration.java
+package android.content.res; public class Configuration { public static final int ORIENTATION_LANDSCAPE=2; public int orientation; public Configuration(){} public Configuration(Configuration c){} public native void setLocale(java.util.Locale l); public native void setLocales(android.os.LocaleList l); public native void setLayoutDirection(java.util.Locale l); }
+//// android/content/res/Resources.java
+package android.content.res; public class Resources { public native android.util.DisplayMetrics getDisplayMetrics(); public native Configuration getConfiguration(); }
+//// android/util/DisplayMetrics.java
+package android.util; public class DisplayMetrics { public float density; public int widthPixels,heightPixels; }
+//// android/app/Dialog.java
+package android.app; public class Dialog { public Dialog(android.content.Context c){} public final native boolean requestWindowFeature(int f); public native void setContentView(android.view.View v); public native android.view.Window getWindow(); public native void show(); public native void dismiss(); public native boolean isShowing(); public native void setCancelable(boolean b); }
+//// android/app/Activity.java
+package android.app; import android.content.*; public class Activity extends Context { public static final int RESULT_OK=-1; protected native void onCreate(android.os.Bundle b); protected native void onPause(); protected native void onResume(); protected native void onDestroy(); public native void onBackPressed(); public native void onConfigurationChanged(android.content.res.Configuration c); public native boolean onKeyDown(int k,android.view.KeyEvent e); protected native void onActivityResult(int r,int s,Intent d); protected native void attachBaseContext(Context c); public native void setContentView(android.view.View v); public native android.view.Window getWindow(); public native void finish(); public native void startActivity(Intent i); public native void startActivityForResult(Intent i,int r); public final native void runOnUiThread(Runnable r); public native Intent getIntent(); public native void recreate(); }
+//// android/view/Window.java
+package android.view; public abstract class Window { public static final int FEATURE_NO_TITLE=1; public native void setStatusBarColor(int c); public native void setNavigationBarColor(int c); public native void addFlags(int f); public native void setBackgroundDrawable(android.graphics.drawable.Drawable d); public native void setLayout(int w,int h); public native void setSoftInputMode(int m); public native WindowManager.LayoutParams getAttributes(); }
+//// android/view/WindowManager.java
+package android.view; public interface WindowManager { class LayoutParams extends ViewGroup.LayoutParams { public static final int FLAG_DIM_BEHIND=2,FLAG_KEEP_SCREEN_ON=128,SOFT_INPUT_ADJUST_RESIZE=16,SOFT_INPUT_STATE_VISIBLE=4; public float dimAmount; public LayoutParams(){ super(0,0);} } }
+//// android/view/Gravity.java
+package android.view; public class Gravity { public static final int CENTER=17,CENTER_VERTICAL=16,CENTER_HORIZONTAL=1,END=8388613; }
+//// android/view/ViewConfiguration.java
+package android.view; public class ViewConfiguration { public static native ViewConfiguration get(android.content.Context c); public native int getScaledTouchSlop(); }
+//// android/view/KeyEvent.java
+package android.view; public class KeyEvent { public static final int KEYCODE_Z=1,KEYCODE_Y=2,KEYCODE_C=3,KEYCODE_X=4,KEYCODE_V=5,KEYCODE_A=6,KEYCODE_S=7,KEYCODE_P=8,KEYCODE_B=9,KEYCODE_E=10,KEYCODE_G=11,KEYCODE_L=12,KEYCODE_R=13,KEYCODE_O=14,KEYCODE_M=15,KEYCODE_H=16,KEYCODE_I=17,KEYCODE_PLUS=18,KEYCODE_EQUALS=19,KEYCODE_MINUS=20,KEYCODE_0=21,KEYCODE_SPACE=22,KEYCODE_LEFT_BRACKET=23,KEYCODE_RIGHT_BRACKET=24,KEYCODE_DEL=25,KEYCODE_FORWARD_DEL=26; public native boolean isCtrlPressed(); public native boolean isShiftPressed(); }
+//// android/view/MotionEvent.java
+package android.view; public class MotionEvent { public static final int ACTION_DOWN=0,ACTION_UP=1,ACTION_MOVE=2,ACTION_CANCEL=3,ACTION_POINTER_DOWN=5,ACTION_POINTER_UP=6; public native int getActionMasked(); public native float getX(); public native float getY(); public native float getX(int i); public native float getY(int i); public native int getPointerCount(); public native int getActionIndex(); public native long getEventTime(); public native int getHistorySize(); public native float getHistoricalX(int i); public native float getHistoricalY(int i); }
+//// android/view/ViewParent.java
+package android.view; public interface ViewParent { void requestDisallowInterceptTouchEvent(boolean b); }
+//// android/view/View.java
+package android.view; import android.content.Context; import android.graphics.*; import android.graphics.drawable.Drawable; public class View { public static final int VISIBLE=0,GONE=8,LAYOUT_DIRECTION_RTL=1; public interface OnClickListener { void onClick(View v); } public interface OnLongClickListener { boolean onLongClick(View v); } public static class MeasureSpec { public static final int EXACTLY=1,AT_MOST=2; public static native int makeMeasureSpec(int s,int m); } public View(Context c){} public native void setBackground(Drawable d); public native void setBackgroundColor(int c); public native void setPadding(int l,int t,int r,int b); public native int getPaddingLeft(); public native int getPaddingRight(); public native int getPaddingTop(); public native int getPaddingBottom(); public final native int getWidth(); public final native int getHeight(); public native void invalidate(); public native void setClickable(boolean b); public native void setOnClickListener(OnClickListener l); public native void setOnLongClickListener(OnLongClickListener l); public native void setLayoutParams(ViewGroup.LayoutParams p); public native ViewGroup.LayoutParams getLayoutParams(); public native void setVisibility(int v); public native void setEnabled(boolean e); public native void setAlpha(float a); public final native ViewParent getParent(); public final native Context getContext(); protected native void onDraw(Canvas c); public native boolean onTouchEvent(MotionEvent e); protected native void onSizeChanged(int w,int h,int ow,int oh); public native boolean post(Runnable r); public native void setMinimumHeight(int h); public final native void measure(int w,int h); public native void setFitsSystemWindows(boolean b); public native int getLayoutDirection(); public final native boolean requestFocus(); }
+//// android/view/ViewGroup.java
+package android.view; import android.content.Context; public abstract class ViewGroup extends View implements ViewParent { public ViewGroup(Context c){super(c);} public void requestDisallowInterceptTouchEvent(boolean b){} public native void addView(View v); public native void addView(View v,LayoutParams p); public native void removeView(View v); public native void removeAllViews(); public native int getChildCount(); public native View getChildAt(int i); public static class LayoutParams { public static final int MATCH_PARENT=-1,WRAP_CONTENT=-2; public int width,height; public LayoutParams(int w,int h){} } public static class MarginLayoutParams extends LayoutParams { public int leftMargin,rightMargin,topMargin,bottomMargin; public MarginLayoutParams(int w,int h){super(w,h);} public native void setMargins(int l,int t,int r,int b); } }
+//// android/widget/LinearLayout.java
+package android.widget; import android.content.Context; import android.view.*; public class LinearLayout extends ViewGroup { public static final int HORIZONTAL=0,VERTICAL=1; public LinearLayout(Context c){super(c);} public native void setOrientation(int o); public native void setGravity(int g); public static class LayoutParams extends ViewGroup.MarginLayoutParams { public float weight; public int gravity; public LayoutParams(int w,int h){super(w,h);} public LayoutParams(int w,int h,float wt){super(w,h);} } }
+//// android/widget/FrameLayout.java
+package android.widget; import android.content.Context; import android.view.*; public class FrameLayout extends ViewGroup { public FrameLayout(Context c){super(c);} public static class LayoutParams extends ViewGroup.MarginLayoutParams { public LayoutParams(int w,int h){super(w,h);} } }
+//// android/widget/GridLayout.java
+package android.widget; import android.content.Context; import android.view.*; public class GridLayout extends ViewGroup { public GridLayout(Context c){super(c);} public native void setColumnCount(int n); public static class LayoutParams extends ViewGroup.MarginLayoutParams { public LayoutParams(){super(0,0);} } }
+//// android/widget/ScrollView.java
+package android.widget; import android.content.Context; public class ScrollView extends FrameLayout { public ScrollView(Context c){super(c);} public native void setFillViewport(boolean b); public native void setVerticalScrollBarEnabled(boolean b); public native void setHorizontalScrollBarEnabled(boolean b); public final native void smoothScrollTo(int x,int y); }
+//// android/widget/HorizontalScrollView.java
+package android.widget; import android.content.Context; public class HorizontalScrollView extends FrameLayout { public HorizontalScrollView(Context c){super(c);} public native void setFillViewport(boolean b); public native void setHorizontalScrollBarEnabled(boolean b); public final native void smoothScrollTo(int x,int y); }
+//// android/widget/TextView.java
+package android.widget; import android.content.Context; import android.text.*; public class TextView extends android.view.View { public TextView(Context c){super(c);} public final native void setText(CharSequence t); public final native void setText(int r); public native void setTextSize(float s); public native void setTextColor(int c); public native void setTypeface(android.graphics.Typeface t); public native void setGravity(int g); public native void setSingleLine(); public native void setSingleLine(boolean b); public native void setEllipsize(TextUtils.TruncateAt t); public native void setMinWidth(int w); public native void setLineSpacing(float a,float m); public native void setSelectAllOnFocus(boolean b); public native void setInputType(int t); public final native void setHintTextColor(int c); public native void setFilters(InputFilter[] f); public native void addTextChangedListener(TextWatcher w); public native CharSequence getText(); }
+//// android/widget/EditText.java
+package android.widget; import android.content.Context; public class EditText extends TextView { public EditText(Context c){super(c);} public native android.text.Editable getText(); }
+//// android/widget/SeekBar.java
+package android.widget; import android.content.Context; public class SeekBar extends android.view.View { public interface OnSeekBarChangeListener { void onProgressChanged(SeekBar s,int p,boolean u); void onStartTrackingTouch(SeekBar s); void onStopTrackingTouch(SeekBar s); } public SeekBar(Context c){super(c);} public native void setMax(int m); public native void setProgress(int p); public native void setProgressTintList(android.content.res.ColorStateList l); public native void setThumbTintList(android.content.res.ColorStateList l); public native void setOnSeekBarChangeListener(OnSeekBarChangeListener l); }
+//// android/widget/Toast.java
+package android.widget; import android.content.Context; public class Toast { public static final int LENGTH_SHORT=0; public static native Toast makeText(Context c,int r,int d); public static native Toast makeText(Context c,CharSequence t,int d); public native void show(); }
+//// android/text/TextUtils.java
+package android.text; public class TextUtils { public enum TruncateAt { END } }
+//// android/text/Editable.java
+package android.text; public interface Editable extends CharSequence {}
+//// android/text/TextWatcher.java
+package android.text; public interface TextWatcher { void beforeTextChanged(CharSequence s,int a,int b,int c); void onTextChanged(CharSequence s,int a,int b,int c); void afterTextChanged(Editable e); }
+//// android/text/InputType.java
+package android.text; public class InputType { public static final int TYPE_CLASS_TEXT=1,TYPE_CLASS_NUMBER=2; }
+//// android/text/InputFilter.java
+package android.text; public interface InputFilter { CharSequence filter(CharSequence s,int a,int b,Spanned d,int c,int e); class LengthFilter implements InputFilter { public LengthFilter(int m){} public CharSequence filter(CharSequence s,int a,int b,Spanned d,int c,int e){return null;} } class AllCaps implements InputFilter { public AllCaps(){} public CharSequence filter(CharSequence s,int a,int b,Spanned d,int c,int e){return null;} } }
+//// android/text/Spanned.java
+package android.text; public interface Spanned extends CharSequence {}
+//// android/graphics/drawable/Drawable.java
+package android.graphics.drawable; public abstract class Drawable {}
+//// android/graphics/drawable/ColorDrawable.java
+package android.graphics.drawable; public class ColorDrawable extends Drawable { public ColorDrawable(int c){} }
+//// android/graphics/drawable/GradientDrawable.java
+package android.graphics.drawable; public class GradientDrawable extends Drawable { public GradientDrawable(){} public native void setColor(int c); public native void setCornerRadius(float r); public native void setStroke(int w,int c); }
+//// android/graphics/Typeface.java
+package android.graphics; public class Typeface { public static final Typeface DEFAULT_BOLD=null; }
+//// android/graphics/Color.java
+package android.graphics; public class Color { public static final int WHITE=-1,TRANSPARENT=0; public static native int HSVToColor(float[] h); public static native void colorToHSV(int c,float[] h); }
+//// android/graphics/Rect.java
+package android.graphics; public class Rect { public Rect(){} }
+//// android/graphics/RectF.java
+package android.graphics; public class RectF { public float left,top,right,bottom; public RectF(){} public RectF(float l,float t,float r,float b){} public native void set(float l,float t,float r,float b); public final native float width(); public final native float height(); }
+//// android/graphics/Path.java
+package android.graphics; public class Path { public Path(){} public native void reset(); public native void moveTo(float x,float y); public native void lineTo(float x,float y); public native void close(); public native void cubicTo(float a,float b,float c,float d,float e,float f); }
+//// android/graphics/PathEffect.java
+package android.graphics; public class PathEffect {}
+//// android/graphics/DashPathEffect.java
+package android.graphics; public class DashPathEffect extends PathEffect { public DashPathEffect(float[] i,float p){} }
+//// android/graphics/ColorFilter.java
+package android.graphics; public class ColorFilter {}
+//// android/graphics/LightingColorFilter.java
+package android.graphics; public class LightingColorFilter extends ColorFilter { public LightingColorFilter(int m,int a){} }
+//// android/graphics/Shader.java
+package android.graphics; public class Shader { public enum TileMode { CLAMP, REPEAT } }
+//// android/graphics/LinearGradient.java
+package android.graphics; public class LinearGradient extends Shader { public LinearGradient(float a,float b,float c,float d,int e,int f,TileMode t){} public LinearGradient(float a,float b,float c,float d,int[] e,float[] f,TileMode t){} }
+//// android/graphics/BitmapShader.java
+package android.graphics; public class BitmapShader extends Shader { public BitmapShader(Bitmap b,TileMode x,TileMode y){} }
+//// android/graphics/Paint.java
+package android.graphics; public class Paint { public static final int ANTI_ALIAS_FLAG=1; public enum Style { FILL, STROKE } public enum Cap { ROUND } public enum Join { ROUND } public Paint(){} public Paint(int f){} public native void setColor(int c); public native void setAlpha(int a); public native void setStyle(Style s); public native void setStrokeWidth(float w); public native void setStrokeCap(Cap c); public native void setStrokeJoin(Join j); public native PathEffect setPathEffect(PathEffect e); public native Shader setShader(Shader s); public native ColorFilter setColorFilter(ColorFilter f); public native void setFilterBitmap(boolean b); public native void setTextSize(float s); public native float measureText(String s); }
+//// android/graphics/Bitmap.java
+package android.graphics; public class Bitmap { public enum Config { ARGB_8888 } public enum CompressFormat { PNG, JPEG } public static native Bitmap createBitmap(int w,int h,Config c); public static native Bitmap createScaledBitmap(Bitmap b,int w,int h,boolean f); public native void setPixels(int[] p,int o,int s,int x,int y,int w,int h); public native void getPixels(int[] p,int o,int s,int x,int y,int w,int h); public final native int getWidth(); public final native int getHeight(); public native Bitmap copy(Config c,boolean m); public native boolean compress(CompressFormat f,int q,java.io.OutputStream o); public native void recycle(); public final native boolean isMutable(); }
+//// android/graphics/BitmapFactory.java
+package android.graphics; public class BitmapFactory { public static class Options { public boolean inJustDecodeBounds; public int outWidth,outHeight,inSampleSize; public Bitmap.Config inPreferredConfig; } public static native Bitmap decodeByteArray(byte[] d,int o,int l,Options p); public static native Bitmap decodeFile(String p); }
+//// android/graphics/Canvas.java
+package android.graphics; public class Canvas { public Canvas(){} public Canvas(Bitmap b){} public native void drawRect(RectF r,Paint p); public native void drawRect(float a,float b,float c,float d,Paint p); public native void drawRoundRect(RectF r,float x,float y,Paint p); public native void drawOval(RectF r,Paint p); public native void drawCircle(float x,float y,float r,Paint p); public native void drawLine(float a,float b,float c,float d,Paint p); public native void drawLines(float[] p,int o,int c,Paint pt); public native void drawPath(Path p,Paint pt); public native void drawArc(RectF r,float a,float b,boolean c,Paint p); public native void drawColor(int c); public native void drawBitmap(Bitmap b,Rect s,RectF d,Paint p); public native void drawBitmap(Bitmap b,Rect s,Rect d,Paint p); public native void drawText(String t,float x,float y,Paint p); public native int save(); public native void restore(); public native boolean clipRect(float a,float b,float c,float d); public native boolean clipRect(RectF r); public native void translate(float x,float y); public native void scale(float x,float y); }
+//// androidx/core/content/FileProvider.java
+package androidx.core.content; public class FileProvider { public static native android.net.Uri getUriForFile(android.content.Context c,String a,java.io.File f); }
