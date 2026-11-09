@@ -485,27 +485,44 @@ public class HomeActivity extends Activity {
         progress.show();
         new Thread(new Runnable() {
             @Override public void run() {
-                Doc d = null;
+                ImportUtil.Loaded l = null;
                 String err = null;
                 try {
-                    d = ImportUtil.docFromUri(HomeActivity.this, uri, getString(R.string.layer) + " 1");
+                    l = ImportUtil.load(HomeActivity.this, uri, Doc.MAX_SIDE);
                 } catch (Throwable t) {
                     err = t instanceof OutOfMemoryError ? getString(R.string.out_of_memory) : getString(R.string.open_failed);
                 }
-                final Doc fd = d;
+                final ImportUtil.Loaded fl = l;
                 final String ferr = err;
                 runOnUiThread(new Runnable() {
                     @Override public void run() {
                         progress.dismiss();
-                        if (fd == null) {
+                        if (fl == null) {
                             UI.toast(HomeActivity.this, ferr);
                             return;
                         }
-                        createAndOpen(fd, getString(R.string.imported));
+                        if (fl.project != null) {
+                            createAndOpen(fl.project, getString(R.string.imported));
+                        } else if (fl.media.animated()) {
+                            // GIF / video: let the person choose one frame or all of them
+                            FramePicker.show(HomeActivity.this, fl.media, new FramePicker.Result() {
+                                @Override public void onPick(int frame) { openMedia(fl.media, frame); }
+                            });
+                        } else {
+                            openMedia(fl.media, -1);
+                        }
                     }
                 });
             }
         }).start();
+    }
+
+    private void openMedia(ImportUtil.Media m, int frame) {
+        try {
+            createAndOpen(ImportUtil.docFromMedia(m, frame, getString(R.string.layer) + " 1"), getString(R.string.imported));
+        } catch (Throwable t) {
+            UI.toast(this, t instanceof OutOfMemoryError ? getString(R.string.out_of_memory) : getString(R.string.open_failed));
+        }
     }
 
     // ------------------------------------------------------------------ small views

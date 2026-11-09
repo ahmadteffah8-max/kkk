@@ -3,6 +3,7 @@ package com.pixelstudio.app;
 import android.app.Activity;
 import android.app.Dialog;
 import android.content.ActivityNotFoundException;
+import android.content.ClipData;
 import android.content.Context;
 import android.content.Intent;
 import android.content.res.ColorStateList;
@@ -40,6 +41,7 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.util.ArrayList;
 import java.util.List;
 
 /** The drawing screen: tools, canvas, layers, timeline, playback, import/export and autosave. */
@@ -1153,12 +1155,14 @@ public class EditorActivity extends Activity implements CanvasView.Host, Timelin
         }
     }
 
-    // ------------------------------------------------------------------ import image
+    // ------------------------------------------------------------------ import image / GIF / video
 
     private void pickImage() {
         Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
         i.addCategory(Intent.CATEGORY_OPENABLE);
-        i.setType("image/*");
+        i.setType("*/*");
+        i.putExtra(Intent.EXTRA_MIME_TYPES, new String[]{"image/*", "video/*"});
+        i.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
         try {
             startActivityForResult(i, REQ_IMPORT);
         } catch (ActivityNotFoundException e) {
@@ -1169,31 +1173,139 @@ public class EditorActivity extends Activity implements CanvasView.Host, Timelin
     @Override
     protected void onActivityResult(int req, int res, Intent data) {
         super.onActivityResult(req, res, data);
-        if (res != RESULT_OK || data == null || data.getData() == null || doc == null) return;
-        final Uri uri = data.getData();
+        if (res != RESULT_OK || data == null || doc == null) return;
         if (req == REQ_IMPORT) {
-            new Thread(new Runnable() {
-                @Override public void run() {
-                    try {
-                        final ImportUtil.Img img = ImportUtil.imageForPaste(EditorActivity.this, uri, doc.w, doc.h);
-                        runOnUiThread(new Runnable() {
-                            @Override public void run() {
-                                canvas.pasteImage(img.px, img.w, img.h);
-                                updateOptions();
-                            }
-                        });
-                    } catch (final Exception e) {
-                        runOnUiThread(new Runnable() {
-                            @Override public void run() { UI.toast(EditorActivity.this, R.string.import_failed); }
-                        });
-                    }
-                }
-            }).start();
-        } else if (req == REQ_SAVE && pendingExport != null) {
+            List<Uri> uris = new ArrayList<>();
+            ClipData cd = data.getClipData();
+            if (cd != null) {
+                for (int i = 0; i < cd.getItemCount(); i++) uris.add(cd.getItemAt(i).getUri());
+            } else if (data.getData() != null) {
+                uris.add(data.getData());
+            }
+            if (!uris.isEmpty()) importMedia(uris);
+        } else if (req == REQ_SAVE && pendingExport != null && data.getData() != null) {
             final Exporter.Options o = pendingExport;
             pendingExport = null;
-            runExport(o, uri, null);
+            runExport(o, data.getData(), null);
         }
+    }
+
+    /** Decodes the picked images / GIFs / videos off the UI thread, then places them. */
+    private void importMedia(final List<Uri> uris) {
+        final int cw = doc.w, ch = doc.h;
+        new Thread(new Runnable() {
+            @Override public void run() {
+                final List<ImportUtil.Media> out = new ArrayList<>();
+                boolean failed = false, oom = false;
+                for (Uri u : uris) {
+                    try {
+                        ImportUtil.Loaded l = ImportUtil.load(EditorActivity.this, u, Doc.MAX_SIDE);
+                        if (l.media == null) {
+                            failed = true;
+                            continue;
+                        }
+                        out.add(ImportUtil.fitMedia(l.media, cw, ch));
+                    } catch (OutOfMemoryError e) {
+                        oom = true;
+                    } catch (Exception e) {
+                        failed = true;
+                    }
+                }
+                final boolean ffailed = failed, foom = oom;
+                runOnUiThread(new Runnable() {
+                    @Override public void run() {
+                        if (foom) UI.toast(EditorActivity.this, R.string.out_of_memory);
+                        else if (ffailed) UI.toast(EditorActivity.this, R.string.import_failed);
+                        if (!out.isEmpty()) placeMedia(out, 0, out.size() == 1);
+                    }
+                });
+            }
+        }).start();
+    }
+
+    /** Handles the picked media one by one; animated ones first ask which frame(s) to use. */
+    private void placeMedia(final List<ImportUtil.Media> list, final int idx, final boolean single) {
+        if (idx >= list.size() || doc == null) return;
+        final ImportUtil.Media m = list.get(idx);
+        if (m.animated()) {
+            FramePicker.show(this, m, new FramePicker.Result() {
+                @Override public void onPick(int frame) {
+                    applyMedia(m, frame, single);
+                    placeMedia(list, idx + 1, single);
+                }
+            });
+        } else {
+            applyMedia(m, 0, single);
+            placeMedia(list, idx + 1, single);
+        }
+    }
+
+    private void applyMedia(ImportUtil.Media m, int frame, boolean single) {
+        if (frame < 0) {
+            addAnimationLayer(m);
+        } else if (single) {
+            // one image: floating, so it can be moved and edited before it is dropped into the layer
+            canvas.pasteImage(m.frames.get(frame), m.w, m.h);
+            updateOptions();
+        } else {
+            addImageLayer(m.frames.get(frame), m.w, m.h);
+        }
+    }
+
+    private int[] centered(int[] px, int w, int h) {
+        int[] out = new int[doc.w * doc.h];
+        int ox = (doc.w - w) / 2, oy = (doc.h - h) / 2;
+        for (int y = 0; y < h; y++) {
+            int dy = y + oy;
+            if (dy < 0 || dy >= doc.h) continue;
+            for (int x = 0; x < w; x++) {
+                int dx = x + ox;
+                if (dx >= 0 && dx < doc.w) out[dy * doc.w + dx] = px[y * w + x];
+            }
+        }
+        return out;
+    }
+
+    private boolean memoryOk(int newLayers, int totalFrames) {
+        long bytes = (long) doc.w * doc.h * 4L * (doc.layers.size() + newLayers) * Math.max(doc.frames.size(), totalFrames);
+        if (bytes > 300L * 1024 * 1024) {
+            UI.toast(this, R.string.out_of_memory);
+            return false;
+        }
+        return true;
+    }
+
+    /** Adds a still image as a new top layer on the current frame. */
+    private void addImageLayer(final int[] px, final int w, final int h) {
+        if (!memoryOk(1, 1)) return;
+        structOp(new Runnable() {
+            @Override public void run() {
+                doc.addLayer(doc.layers.size(), getString(R.string.layer) + " " + (doc.layers.size() + 1));
+                doc.frame().px[doc.activeLayer] = centered(px, w, h);
+            }
+        });
+    }
+
+    /** Adds every frame of a GIF / video as a new top layer, creating frames when the project has fewer. */
+    private void addAnimationLayer(final ImportUtil.Media m) {
+        if (!memoryOk(1, m.frames.size())) return;
+        final boolean fresh = doc.frames.size() == 1;
+        structOp(new Runnable() {
+            @Override public void run() {
+                doc.addLayer(doc.layers.size(), getString(R.string.layer) + " " + (doc.layers.size() + 1));
+                int layer = doc.activeLayer;
+                int origFrames = doc.frames.size();
+                for (int i = 0; i < m.frames.size(); i++) {
+                    if (i >= doc.frames.size()) doc.addFrame(doc.frames.size(), -1);
+                    Frame f = doc.frames.get(i);
+                    f.px[layer] = centered(m.frames.get(i), m.w, m.h);
+                    if (i >= origFrames || fresh) f.delayMs = m.delays.get(i);
+                }
+                doc.activeFrame = 0;
+                doc.activeLayer = layer;
+                if (fresh) doc.loop = m.plays;
+            }
+        });
     }
 
     // ------------------------------------------------------------------ export
@@ -1383,7 +1495,7 @@ public class EditorActivity extends Activity implements CanvasView.Host, Timelin
 
     private String safeName() {
         String n = projectName.replaceAll("[^\\p{L}\\p{N}_\\- ]", "").trim();
-        return n.isEmpty() ? "pixel-studio" : n;
+        return n.isEmpty() ? "pixelz" : n;
     }
 
     /** Renders on a worker thread. Writes to dest when given, otherwise to a cache file that is then shared. */

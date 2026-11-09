@@ -5,5 +5,5 @@
     <color name="accent">#8B6CFF</color>
     <color name="text">#EEF0FA</color>
     <color name="text2">#9BA1BB</color>
-    <color name="ic_background">#1A1C27</color>
+    <color name="ic_background">#000000</color>
 </resources>

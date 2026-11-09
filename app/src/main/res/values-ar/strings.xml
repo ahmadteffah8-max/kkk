@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">Pixel Studio</string>
+    <string name="app_name">Pixelz</string>
     <string name="background">الخلفية</string>
     <string name="bg_applied">تم تعيين الخلفية (تُستخدم عند التصدير)</string>
     <string name="black">أسود</string>
@@ -42,7 +42,7 @@
     <string name="hint_pixel_pencil">بكسلات حادة</string>
     <string name="hint_select">اسحب للتحديد ثم اسحب داخله للنقل</string>
     <string name="import_failed">تعذر استيراد هذه الصورة</string>
-    <string name="import_image">استيراد صورة إلى هذه الطبقة</string>
+    <string name="import_image">إضافة صورة / GIF / فيديو</string>
     <string name="imported">مستورد</string>
     <string name="language">اللغة: العربية / English</string>
     <string name="layer">طبقة</string>
@@ -66,7 +66,7 @@
     <string name="opacity">الشفافية</string>
     <string name="open">فتح</string>
     <string name="open_failed">تعذر فتح هذا الملف</string>
-    <string name="open_image">فتح صورة / GIF</string>
+    <string name="open_image">فتح صورة / GIF / فيديو</string>
     <string name="opening">جارٍ الفتح…</string>
     <string name="out_of_memory">الذاكرة غير كافية لهذا الحجم</string>
     <string name="outline">حدود فقط</string>
@@ -100,4 +100,9 @@
     <string name="type">النوع</string>
     <string name="untitled">بدون عنوان</string>
     <string name="white">أبيض</string>
+    <string name="pick_frame_gif">هذا الـ GIF فيه عدة فريمات</string>
+    <string name="pick_frame_video">فريمات الفيديو</string>
+    <string name="frame_of">الفريم %1$d / %2$d</string>
+    <string name="this_frame_only">هذا الفريم فقط</string>
+    <string name="all_frames">كل الفريمات (%d)</string>
 </resources>

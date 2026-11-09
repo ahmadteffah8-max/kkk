@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">Pixel Studio</string>
+    <string name="app_name">Pixelz</string>
     <string name="background">Background</string>
     <string name="bg_applied">Background set (used when exporting)</string>
     <string name="black">Black</string>
@@ -42,7 +42,7 @@
     <string name="hint_pixel_pencil">Hard pixels</string>
     <string name="hint_select">Drag to select, then drag inside to move</string>
     <string name="import_failed">Could not import this image</string>
-    <string name="import_image">Import image into this layer</string>
+    <string name="import_image">Add image / GIF / video</string>
     <string name="imported">Imported</string>
     <string name="language">Language: English / العربية</string>
     <string name="layer">Layer</string>
@@ -66,7 +66,7 @@
     <string name="opacity">Opacity</string>
     <string name="open">Open</string>
     <string name="open_failed">Could not open this file</string>
-    <string name="open_image">Open image / GIF</string>
+    <string name="open_image">Open image / GIF / video</string>
     <string name="opening">Opening…</string>
     <string name="out_of_memory">Not enough memory for this size</string>
     <string name="outline">Outline</string>
@@ -100,4 +100,9 @@
     <string name="type">Type</string>
     <string name="untitled">Untitled</string>
     <string name="white">White</string>
+    <string name="pick_frame_gif">This GIF has several frames</string>
+    <string name="pick_frame_video">Video frames</string>
+    <string name="frame_of">Frame %1$d / %2$d</string>
+    <string name="this_frame_only">This frame only</string>
+    <string name="all_frames">All frames (%d)</string>
 </resources>
