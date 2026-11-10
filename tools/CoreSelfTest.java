@@ -24,6 +24,11 @@ public class CoreSelfTest {
         testExportPipeline();
         testTemplates();
         testFloatingMoveLogic();
+        testResize();
+        testOverlayBox();
+        testFrameSelector();
+        testThumbAndShallowCopy();
+        testThinAndHistoryBudget();
         if (a.length > 0) writeSampleGif(a[0]);
         System.out.println(checks + " checks, " + failures + " failures");
         System.exit(failures == 0 ? 0 : 1);
@@ -437,5 +442,211 @@ public class CoreSelfTest {
         try (FileOutputStream o = new FileOutputStream(path)) {
             GifEncoder.write(o, w, h, fr, delays, 0, null);
         }
+    }
+
+    // ------------------------------------------------------------------ resize / overlay / video / thumbnails
+
+    static void testResize() {
+        int[] src = new int[4 * 4];
+        for (int i = 0; i < src.length; i++) src[i] = 0xFF000000 | (i * 15);
+        check(Arrays.equals(Raster.resizeWindow(src, 4, 4, 4, 4, 0, 0, 4, 4, true), src), "resize identity");
+        int[] up = Raster.resizeWindow(src, 4, 4, 8, 8, 0, 0, 8, 8, false);
+        check(up[0] == src[0] && up[1] == src[0] && up[2] == src[1] && up[8 * 7 + 7] == src[15], "nearest 2x");
+        // a window of the full result equals the same crop of the full result
+        int[] full = Raster.resizeWindow(src, 4, 4, 11, 9, 0, 0, 11, 9, true);
+        int[] win = Raster.resizeWindow(src, 4, 4, 11, 9, 3, 2, 5, 4, true);
+        boolean same = true;
+        for (int y = 0; y < 4; y++) for (int x = 0; x < 5; x++) same &= win[y * 5 + x] == full[(y + 2) * 11 + (x + 3)];
+        check(same, "window equals crop of full resize (bilinear)");
+        // windows that reach outside the target stay transparent and do not crash
+        int[] out = Raster.resizeWindow(src, 4, 4, 8, 8, -2, -2, 12, 12, true);
+        check(out.length == 144 && out[0] == 0 && (out[2 * 12 + 2] >>> 24) == 255, "window partly outside target");
+        // shrinking a checkerboard averages to gray
+        int[] chk = new int[8 * 8];
+        for (int y = 0; y < 8; y++) for (int x = 0; x < 8; x++) chk[y * 8 + x] = ((x + y) & 1) == 0 ? 0xFF000000 : 0xFFFFFFFF;
+        int[] gray = Raster.resizeWindow(chk, 8, 8, 2, 2, 0, 0, 2, 2, true);
+        boolean ok = true;
+        for (int v : gray) { int c = v & 255; ok &= (v >>> 24) == 255 && c >= 126 && c <= 129; }
+        check(ok, "area average of checkerboard is gray");
+        // transparent pixels do not darken colored ones
+        int[] edge = {0xFFFF0000, 0x00000000, 0xFFFF0000, 0x00000000};
+        int[] e = Raster.resizeWindow(edge, 2, 2, 1, 1, 0, 0, 1, 1, true);
+        check(((e[0] >> 16) & 255) == 255 && (e[0] >>> 24) >= 127 && (e[0] >>> 24) <= 129, "premultiplied average keeps color " + Integer.toHexString(e[0]));
+        int[] bl = Raster.resizeWindow(edge, 2, 2, 5, 5, 0, 0, 5, 5, true);
+        boolean noDark = true;
+        for (int v : bl) if ((v >>> 24) != 0) noDark &= ((v >> 16) & 255) == 255 && (v & 255) == 0;
+        check(noDark, "bilinear keeps red where visible");
+        // a huge virtual target only costs the size of the window
+        int[] big = Raster.resizeWindow(src, 4, 4, 100000, 100000, 50000, 50000, 16, 16, true);
+        check(big.length == 256, "huge target windowed");
+    }
+
+    static void testOverlayBox() {
+        OverlayBox b = new OverlayBox(10, 10, 40, 20);
+        check(b.hit(10, 10, 5) == OverlayBox.TL && b.hit(50, 30, 5) == OverlayBox.BR, "corner hit");
+        check(b.hit(30, 10, 5) == OverlayBox.T && b.hit(50, 20, 5) == OverlayBox.R, "edge hit");
+        check(b.hit(30, 20, 5) == OverlayBox.BODY, "body hit");
+        check(b.hit(100, 100, 5) == OverlayBox.NONE && b.hit(2, 2, 5) == OverlayBox.NONE, "empty area is not a hit");
+        check(b.hit(12, 12, 5) == OverlayBox.TL, "hit radius around corner");
+        // proportional resize from the bottom-right corner keeps the top-left fixed and the ratio
+        b.begin(OverlayBox.BR);
+        b.drag(40, 20);
+        check(b.x == 10 && b.y == 10 && Math.abs(b.w - 80) < 0.01 && Math.abs(b.h - 40) < 0.01, "BR doubles size");
+        b.end();
+        // from the top-left corner the bottom-right stays fixed
+        b.begin(OverlayBox.TL);
+        b.drag(20, 10);
+        check(Math.abs((b.x + b.w) - 90) < 0.01 && Math.abs((b.y + b.h) - 50) < 0.01 && Math.abs(b.w / b.h - 2) < 0.01, "TL anchors BR, keeps ratio");
+        b.end();
+        // move
+        OverlayBox m = new OverlayBox(0, 0, 10, 10);
+        m.begin(OverlayBox.BODY);
+        m.drag(7, -3);
+        check(m.x == 7 && m.y == -3 && m.w == 10 && m.h == 10, "body move");
+        // edge stretch is free
+        OverlayBox s = new OverlayBox(5, 5, 10, 10);
+        s.begin(OverlayBox.R);
+        s.drag(10, 99);
+        check(s.w == 20 && s.h == 10 && s.x == 5, "edge stretches one axis");
+        s.begin(OverlayBox.L);
+        s.drag(-5, 0);
+        check(s.x == 0 && s.w == 25, "left edge keeps right side");
+        // never collapses below the minimum
+        OverlayBox t = new OverlayBox(0, 0, 10, 10);
+        t.begin(OverlayBox.BR);
+        t.drag(-500, -500);
+        check(t.w >= 1 && t.h >= 1, "minimum size");
+        // tiny box can still be grabbed by its body
+        OverlayBox tiny = new OverlayBox(0, 0, 6, 6);
+        check(tiny.hit(3, 3, 50) == OverlayBox.BODY, "tiny box middle is body");
+    }
+
+    static int[] solid(int n, int c) {
+        int[] a = new int[n];
+        Arrays.fill(a, c);
+        return a;
+    }
+
+    static void testFrameSelector() {
+        Random rnd = new Random(7);
+        int n = 40, px = 48 * 27;
+        // a perfectly still clip with sensor noise collapses to one frame covering the whole clip
+        int[][] still = new int[n][];
+        long[] ts = new long[n];
+        for (int i = 0; i < n; i++) {
+            still[i] = new int[px];
+            for (int k = 0; k < px; k++) {
+                int v = 100 + rnd.nextInt(3) - 1;
+                still[i][k] = 0xFF000000 | (v << 16) | (v << 8) | v;
+            }
+            ts[i] = i * 100L;
+        }
+        FrameSelector.Result r = FrameSelector.select(still, ts, 4000, 100);
+        check(r.keep.length == 1 && r.keep[0] == 0 && r.delaysMs[0] == 4000, "still clip -> 1 frame with full duration, got " + r.keep.length);
+
+        // two scene cuts -> 3 frames, durations follow the cuts
+        int[][] cuts = new int[n][];
+        for (int i = 0; i < n; i++) cuts[i] = solid(px, i < 10 ? 0xFF202020 : (i < 25 ? 0xFFE0A000 : 0xFF1060FF));
+        r = FrameSelector.select(cuts, ts, 4000, 100);
+        check(r.keep.length == 3 && r.keep[1] == 10 && r.keep[2] == 25, "scene cuts kept: " + Arrays.toString(r.keep));
+        check(r.delaysMs[0] == 1000 && r.delaysMs[1] == 1500 && r.delaysMs[2] == 1500, "cut durations " + Arrays.toString(r.delaysMs));
+
+        // a small object moving over a still background is not lost
+        int[][] mover = new int[n][];
+        for (int i = 0; i < n; i++) {
+            mover[i] = solid(px, 0xFF101010);
+            int x0 = i * 1, y0 = 10;
+            for (int yy = y0; yy < y0 + 5; yy++) for (int xx = x0; xx < x0 + 5; xx++) mover[i][yy * 48 + xx] = 0xFFFFFFFF;
+        }
+        r = FrameSelector.select(mover, ts, 4000, 100);
+        check(r.keep.length > 4 && r.keep.length < n, "moving object keeps several frames but not all: " + r.keep.length);
+
+        // slow gradual change still produces frames
+        int[][] fade = new int[n][];
+        for (int i = 0; i < n; i++) fade[i] = solid(px, 0xFF000000 | ((i * 5) << 16));
+        r = FrameSelector.select(fade, ts, 4000, 100);
+        check(r.keep.length >= 3 && r.keep.length < n, "fade keeps spaced frames: " + r.keep.length);
+
+        // cap: everything changes, but only maxKeep frames may be returned, first frame included, delays cover the clip
+        int[][] wild = new int[n][];
+        for (int i = 0; i < n; i++) wild[i] = solid(px, 0xFF000000 | rnd.nextInt(0xFFFFFF));
+        r = FrameSelector.select(wild, ts, 4000, 8);
+        long total = 0;
+        for (int d : r.delaysMs) total += d;
+        check(r.keep.length <= 8 && r.keep[0] == 0 && total == 4000, "cap respected, timing preserved: " + r.keep.length + " total " + total);
+
+        // failed (null) samples are ignored; all-null input still yields one frame
+        int[][] holes = new int[5][];
+        holes[0] = solid(px, 0xFF000000);
+        holes[3] = solid(px, 0xFFFFFFFF);
+        r = FrameSelector.select(holes, new long[]{0, 100, 200, 300, 400}, 500, 10);
+        check(r.keep.length == 2 && r.keep[1] == 3, "null samples tolerated " + Arrays.toString(r.keep));
+        r = FrameSelector.select(new int[3][], new long[]{0, 100, 200}, 300, 10);
+        check(r.keep.length == 1 && r.delaysMs[0] == 300, "all-null input");
+        check(FrameSelector.select(new int[0][], new long[0], 0, 5).keep.length == 0, "empty input");
+    }
+
+    static void testThumbAndShallowCopy() {
+        Doc d = Doc.create(64, 64, false, 0, "a");
+        d.addLayer(1, "b");
+        Arrays.fill(d.frames.get(0).px[0], 0xFFFF0000);
+        for (int y = 0; y < 32; y++) for (int x = 0; x < 32; x++) d.frames.get(0).px[1][y * 64 + x] = 0xFF0000FF;
+        int[] th = new int[16 * 16];
+        d.composeThumb(d.frames.get(0), 16, 16, th);
+        check(th[0] == 0xFF0000FF && th[15 * 16 + 15] == 0xFFFF0000 && th[2 * 16 + 20 - 16] == 0xFF0000FF, "thumb composes layers");
+        // thumb of a 1000-frame, large-canvas project needs only thumb-sized memory per frame
+        Doc big = Doc.create(1024, 1024, false, 0, "a");
+        int[] t2 = new int[40 * 40];
+        big.composeThumb(big.frames.get(0), 40, 40, t2);
+        check(t2[0] == 0, "empty thumb transparent");
+        // enlarging a tiny sprite is nearest neighbour
+        Doc sp = Doc.create(2, 2, true, 0, "a");
+        sp.frames.get(0).px[0][0] = 0xFFFF0000;
+        int[] t3 = new int[8 * 8];
+        sp.composeThumb(sp.frames.get(0), 8, 8, t3);
+        check(t3[0] == 0xFFFF0000 && t3[3 * 8 + 3] == 0xFFFF0000 && t3[4] == 0, "thumb upscale nearest");
+
+        // shallow copy: same pixels, independent structure, writes identically
+        Doc c = d.shallowCopy();
+        d.addLayer(2, "c");
+        d.frames.get(0).px[0][5] = 0xFF00FF00;
+        check(c.layers.size() == 2 && c.frames.get(0).px.length == 2, "shallow copy keeps its own structure");
+        try {
+            ByteArrayOutputStream bo = new ByteArrayOutputStream();
+            ProjectIO.write(bo, c);
+            Doc back = ProjectIO.read(new ByteArrayInputStream(bo.toByteArray()));
+            check(back.layers.size() == 2 && back.frames.get(0).px[0][5] == 0xFF00FF00, "shallow copy saves (shares pixels)");
+        } catch (IOException e) {
+            check(false, "shallow copy save: " + e);
+        }
+    }
+
+    static void testThinAndHistoryBudget() {
+        int[] delays = new int[100];
+        for (int i = 0; i < 100; i++) delays[i] = 50;
+        int[][] t = FrameSelector.thin(delays, 10);
+        int sum = 0;
+        for (int v : t[1]) sum += v;
+        check(t[0].length == 10 && t[0][0] == 0 && sum == 5000, "thin keeps 10 frames and the running time");
+        check(FrameSelector.thin(delays, 500)[0].length == 100, "thin leaves small lists alone");
+        check(FrameSelector.thin(new int[]{30}, 0)[0].length == 1, "thin keeps at least one frame");
+
+        // undo budget counts the memory structural commands really hold on to
+        Doc d = Doc.create(256, 256, false, 0, "a");
+        History h = new History(1000, 8L * 1024 * 1024); // 8 MB budget, a 256x256 frame is 256 KB
+        for (int i = 0; i < 100; i++) {
+            final int at = d.frames.size();
+            h.struct(d, new Runnable() { public void run() { d.addFrame(at, -1); } });
+        }
+        check(h.undoSize() < 100 && h.undoSize() >= 20, "struct history is trimmed by real memory: " + h.undoSize());
+        // and removing frames: the removed arrays are held by the 'before' snapshot
+        History h2 = new History(1000, 4L * 1024 * 1024);
+        Doc d2 = Doc.create(256, 256, false, 0, "a");
+        for (int i = 0; i < 30; i++) d2.addFrame(d2.frames.size(), -1);
+        for (int i = 0; i < 30; i++) h2.struct(d2, new Runnable() { public void run() { d2.removeFrame(d2.frames.size() - 1); } });
+        check(h2.undoSize() < 30, "removal history is trimmed too: " + h2.undoSize());
+        int steps = 0;
+        while (h2.undo(d2)) steps++;
+        check(steps == h2.undoSize() + steps && d2.frames.size() >= 1, "undo still works after trimming");
     }
 }

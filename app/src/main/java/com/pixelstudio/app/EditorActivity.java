@@ -72,8 +72,17 @@ public class EditorActivity extends Activity implements CanvasView.Host, Timelin
     private Exporter.Options pendingExport;
 
     private final Runnable saveRunnable = new Runnable() {
-        @Override public void run() { saveNow(); }
+        @Override public void run() { saveAsync(); }
     };
+
+    private final java.util.concurrent.ExecutorService saver = java.util.concurrent.Executors.newSingleThreadExecutor(
+            new java.util.concurrent.ThreadFactory() {
+                @Override public Thread newThread(Runnable r) {
+                    Thread t = new Thread(r, "autosave");
+                    t.setDaemon(false);
+                    return t;
+                }
+            });
 
     private final Runnable playTick = new Runnable() {
         @Override public void run() {
@@ -90,7 +99,7 @@ public class EditorActivity extends Activity implements CanvasView.Host, Timelin
             doc.activeFrame = next;
             canvas.refreshAll();
             timeline.invalidateCells();
-            timeline.scrollToActive();
+            timeline.ensureVisible(doc.activeFrame, false);
             handler.postDelayed(this, Math.max(20, doc.frame().delayMs));
         }
     };
@@ -178,10 +187,20 @@ public class EditorActivity extends Activity implements CanvasView.Host, Timelin
     protected void onDestroy() {
         super.onDestroy();
         handler.removeCallbacksAndMessages(null);
+        if (canvas != null) canvas.release();
+        saver.shutdown(); // a save in flight still finishes
     }
 
     @Override
     public void onBackPressed() {
+        if (canvas != null && canvas.isEyedropping()) {
+            canvas.cancelEyedrop();
+            return;
+        }
+        if (canvas != null && canvas.hasOverlay()) {
+            canvas.cancelOverlay(); // Back drops the picture that is being placed
+            return;
+        }
         if (doc != null) {
             stopPlay();
             canvas.commitFloating();
@@ -198,6 +217,34 @@ public class EditorActivity extends Activity implements CanvasView.Host, Timelin
         handler.postDelayed(saveRunnable, AUTOSAVE_MS);
     }
 
+    /** Autosave: the document structure is copied on the UI thread (cheap, pixels are shared), writing happens in the background. */
+    private void saveAsync() {
+        handler.removeCallbacks(saveRunnable);
+        if (!dirty || doc == null) return;
+        dirty = false;
+        final Doc copy = doc.shallowCopy();
+        final String id = projectId, name = projectName;
+        try {
+            saver.execute(new Runnable() {
+                @Override public void run() {
+                    try {
+                        ProjectStore.save(EditorActivity.this, id, name, copy);
+                    } catch (IOException | RuntimeException e) {
+                        runOnUiThread(new Runnable() {
+                            @Override public void run() {
+                                dirty = true;
+                                if (!isFinishing()) UI.toast(EditorActivity.this, R.string.save_failed);
+                            }
+                        });
+                    }
+                }
+            });
+        } catch (RuntimeException e) {
+            dirty = true;
+        }
+    }
+
+    /** Saves right now and waits for it (leaving the screen, rename, explicit save). */
     private void saveNow() {
         handler.removeCallbacks(saveRunnable);
         if (!dirty || doc == null) return;
@@ -535,6 +582,23 @@ public class EditorActivity extends Activity implements CanvasView.Host, Timelin
         if (optionsBar == null) return;
         optionsBar.removeAllViews();
         int t = ts.tool;
+        if (canvas.isEyedropping()) {
+            addOpt(hint(R.string.eyedropper_hint));
+            addOpt(UI.button(this, getString(R.string.cancel), UI.SURFACE3, UI.TEXT, new View.OnClickListener() {
+                @Override public void onClick(View v) { canvas.cancelEyedrop(); }
+            }));
+            return;
+        }
+        if (canvas.hasOverlay()) {
+            addOpt(UI.button(this, getString(R.string.place), UI.ACCENT, Color.WHITE, new View.OnClickListener() {
+                @Override public void onClick(View v) { canvas.commitOverlay(); }
+            }));
+            addOpt(UI.button(this, getString(R.string.cancel), UI.SURFACE3, UI.TEXT, new View.OnClickListener() {
+                @Override public void onClick(View v) { canvas.cancelOverlay(); }
+            }));
+            addOpt(hint(R.string.overlay_hint));
+            return;
+        }
         if (ts.usesSize()) {
             final TextView lbl = UI.bold(this, getString(R.string.size) + " " + ts.size(), 13, UI.TEXT);
             lbl.setMinWidth(UI.dp(this, 64));
@@ -1158,16 +1222,7 @@ public class EditorActivity extends Activity implements CanvasView.Host, Timelin
     // ------------------------------------------------------------------ import image / GIF / video
 
     private void pickImage() {
-        Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
-        i.addCategory(Intent.CATEGORY_OPENABLE);
-        i.setType("*/*");
-        i.putExtra(Intent.EXTRA_MIME_TYPES, new String[]{"image/*", "video/*"});
-        i.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
-        try {
-            startActivityForResult(i, REQ_IMPORT);
-        } catch (ActivityNotFoundException e) {
-            UI.toast(this, R.string.no_app_found);
-        }
+        MediaPicker.pick(this, REQ_IMPORT, true);
     }
 
     @Override
@@ -1190,118 +1245,173 @@ public class EditorActivity extends Activity implements CanvasView.Host, Timelin
         }
     }
 
-    /** Decodes the picked images / GIFs / videos off the UI thread, then places them. */
+    private List<ImportUtil.Media> mediaQueue;
+    private int mediaIdx;
+    private boolean mediaSingle;
+
+    /** Decodes the picked images / GIFs / videos off the UI thread (with progress and Cancel), then places them. */
     private void importMedia(final List<Uri> uris) {
         final int cw = doc.w, ch = doc.h;
+        final Busy busy = Busy.show(this, getString(R.string.opening), true);
         new Thread(new Runnable() {
             @Override public void run() {
                 final List<ImportUtil.Media> out = new ArrayList<>();
-                boolean failed = false, oom = false;
+                boolean failed = false, oom = false, trimmed = false;
+                final ImportUtil.Progress pg = new ImportUtil.Progress() {
+                    @Override public void onProgress(int percent) { busy.progress(percent); }
+                    @Override public boolean cancelled() { return busy.cancelled(); }
+                };
                 for (Uri u : uris) {
+                    if (busy.cancelled()) break;
                     try {
-                        ImportUtil.Loaded l = ImportUtil.load(EditorActivity.this, u, Doc.MAX_SIDE);
+                        ImportUtil.Loaded l = ImportUtil.load(EditorActivity.this, u, Doc.MAX_SIDE, pg);
                         if (l.media == null) {
                             failed = true;
                             continue;
                         }
+                        trimmed |= l.media.trimmed;
                         out.add(ImportUtil.fitMedia(l.media, cw, ch));
+                    } catch (ImportUtil.CancelledException e) {
+                        break;
                     } catch (OutOfMemoryError e) {
                         oom = true;
                     } catch (Exception e) {
                         failed = true;
                     }
                 }
-                final boolean ffailed = failed, foom = oom;
+                final boolean ffailed = failed, foom = oom, ftrim = trimmed, fcancel = busy.cancelled();
                 runOnUiThread(new Runnable() {
                     @Override public void run() {
+                        busy.dismiss();
+                        if (isFinishing() || doc == null || fcancel) return;
                         if (foom) UI.toast(EditorActivity.this, R.string.out_of_memory);
                         else if (ffailed) UI.toast(EditorActivity.this, R.string.import_failed);
-                        if (!out.isEmpty()) placeMedia(out, 0, out.size() == 1);
+                        if (ftrim) UI.toast(EditorActivity.this, R.string.video_trimmed);
+                        if (!out.isEmpty()) startQueue(out);
                     }
                 });
             }
         }).start();
     }
 
-    /** Handles the picked media one by one; animated ones first ask which frame(s) to use. */
-    private void placeMedia(final List<ImportUtil.Media> list, final int idx, final boolean single) {
-        if (idx >= list.size() || doc == null) return;
-        final ImportUtil.Media m = list.get(idx);
+    private void startQueue(List<ImportUtil.Media> list) {
+        stopPlay();
+        mediaQueue = list;
+        mediaIdx = 0;
+        mediaSingle = list.size() == 1;
+        nextMedia();
+    }
+
+    /** Takes the next picked picture: animated ones first ask which frame(s) to use, then it opens in the placement frame. */
+    private void nextMedia() {
+        if (doc == null || isFinishing() || mediaQueue == null) return;
+        if (mediaIdx >= mediaQueue.size()) {
+            mediaQueue = null;
+            return;
+        }
+        final ImportUtil.Media m = mediaQueue.get(mediaIdx++);
         if (m.animated()) {
             FramePicker.show(this, m, new FramePicker.Result() {
-                @Override public void onPick(int frame) {
-                    applyMedia(m, frame, single);
-                    placeMedia(list, idx + 1, single);
-                }
+                @Override public void onPick(int frame) { beginPlacing(m.pick(frame)); }
             });
         } else {
-            applyMedia(m, 0, single);
-            placeMedia(list, idx + 1, single);
+            beginPlacing(m);
         }
     }
 
-    private void applyMedia(ImportUtil.Media m, int frame, boolean single) {
-        if (frame < 0) {
-            addAnimationLayer(m);
-        } else if (single) {
-            // one image: floating, so it can be moved and edited before it is dropped into the layer
-            canvas.pasteImage(m.frames.get(frame), m.w, m.h);
+    private void beginPlacing(ImportUtil.Media m) {
+        if (doc == null) return;
+        if (canvas.beginOverlay(m, !mediaSingle)) {
             updateOptions();
+            UI.toast(this, R.string.overlay_hint);
         } else {
-            addImageLayer(m.frames.get(frame), m.w, m.h);
+            nextMedia();
         }
     }
 
-    private int[] centered(int[] px, int w, int h) {
-        int[] out = new int[doc.w * doc.h];
-        int ox = (doc.w - w) / 2, oy = (doc.h - h) / 2;
-        for (int y = 0; y < h; y++) {
-            int dy = y + oy;
-            if (dy < 0 || dy >= doc.h) continue;
-            for (int x = 0; x < w; x++) {
-                int dx = x + ox;
-                if (dx >= 0 && dx < doc.w) out[dy * doc.w + dx] = px[y * w + x];
-            }
+    @Override
+    public void onOverlayFinished(CanvasView.OverlayJob job) {
+        updateOptions();
+        if (job == null) {
+            nextMedia();
+            return;
         }
-        return out;
+        ImportUtil.Media m = job.media;
+        if (!m.animated() && !job.newLayer) {
+            canvas.placeStill(job);
+            nextMedia();
+        } else {
+            placeAsLayer(job);
+        }
     }
 
-    private boolean memoryOk(int newLayers, int totalFrames) {
-        long bytes = (long) doc.w * doc.h * 4L * (doc.layers.size() + newLayers) * Math.max(doc.frames.size(), totalFrames);
-        if (bytes > 300L * 1024 * 1024) {
+    private static final long DOC_BUDGET = 300L * 1024 * 1024;
+
+    /** Adds the picture (all its frames when animated) as a new top layer, resized to the frame the person set. */
+    private void placeAsLayer(final CanvasView.OverlayJob job) {
+        final int cw = doc.w, ch = doc.h;
+        long perFrame = (long) cw * ch * 4L * (doc.layers.size() + 1);
+        int allowed = (int) Math.min(Integer.MAX_VALUE, DOC_BUDGET / Math.max(1, perFrame));
+        if (allowed < doc.frames.size() || allowed < 1) {
             UI.toast(this, R.string.out_of_memory);
-            return false;
+            nextMedia();
+            return;
         }
-        return true;
-    }
-
-    /** Adds a still image as a new top layer on the current frame. */
-    private void addImageLayer(final int[] px, final int w, final int h) {
-        if (!memoryOk(1, 1)) return;
-        structOp(new Runnable() {
+        ImportUtil.Media src = job.media;
+        if (src.frames.size() > allowed) {
+            src = src.thin(allowed);
+            UI.toast(this, R.string.media_reduced);
+        }
+        final ImportUtil.Media m = src;
+        final Busy busy = Busy.show(this, getString(R.string.placing), false);
+        new Thread(new Runnable() {
             @Override public void run() {
-                doc.addLayer(doc.layers.size(), getString(R.string.layer) + " " + (doc.layers.size() + 1));
-                doc.frame().px[doc.activeLayer] = centered(px, w, h);
+                int[][] layers = null;
+                boolean oom = false;
+                try {
+                    layers = new int[m.frames.size()][];
+                    for (int i = 0; i < layers.length; i++) {
+                        layers[i] = com.pixelstudio.core.Raster.resizeWindow(m.frames.get(i), m.w, m.h, job.w, job.h,
+                                -job.x, -job.y, cw, ch, job.smooth);
+                    }
+                } catch (OutOfMemoryError e) {
+                    oom = true;
+                    layers = null;
+                }
+                final int[][] fl = layers;
+                final boolean foom = oom;
+                runOnUiThread(new Runnable() {
+                    @Override public void run() {
+                        busy.dismiss();
+                        if (isFinishing() || doc == null) return;
+                        if (fl == null) UI.toast(EditorActivity.this, foom ? R.string.out_of_memory : R.string.import_failed);
+                        else installLayers(m, fl);
+                        nextMedia();
+                    }
+                });
             }
-        });
+        }).start();
     }
 
-    /** Adds every frame of a GIF / video as a new top layer, creating frames when the project has fewer. */
-    private void addAnimationLayer(final ImportUtil.Media m) {
-        if (!memoryOk(1, m.frames.size())) return;
-        final boolean fresh = doc.frames.size() == 1;
+    private void installLayers(final ImportUtil.Media m, final int[][] layers) {
+        final boolean fresh = doc.frames.size() == 1 && layers.length > 1;
         structOp(new Runnable() {
             @Override public void run() {
                 doc.addLayer(doc.layers.size(), getString(R.string.layer) + " " + (doc.layers.size() + 1));
                 int layer = doc.activeLayer;
                 int origFrames = doc.frames.size();
-                for (int i = 0; i < m.frames.size(); i++) {
+                int keepFrame = doc.activeFrame;
+                for (int i = 0; i < layers.length; i++) {
+                    if (layers.length == 1) {
+                        doc.frame().px[layer] = layers[0];
+                        break;
+                    }
                     if (i >= doc.frames.size()) doc.addFrame(doc.frames.size(), -1);
                     Frame f = doc.frames.get(i);
-                    f.px[layer] = centered(m.frames.get(i), m.w, m.h);
+                    f.px[layer] = layers[i];
                     if (i >= origFrames || fresh) f.delayMs = m.delays.get(i);
                 }
-                doc.activeFrame = 0;
+                doc.activeFrame = layers.length == 1 ? keepFrame : 0;
                 doc.activeLayer = layer;
                 if (fresh) doc.loop = m.plays;
             }
@@ -1560,6 +1670,38 @@ public class EditorActivity extends Activity implements CanvasView.Host, Timelin
 
     // ------------------------------------------------------------------ color swatch
 
+    /** The color dialog with an eyedropper: it hides while the person touches the drawing, then comes back. */
+    private void showColorPicker() {
+        ColorDialog.show(this, ts.color, new ColorDialog.Result() {
+            @Override public void onColor(int c) {
+                setColor(c);
+                buildPalette();
+            }
+        }, new Runnable() {
+            @Override public void run() { startEyedrop(); }
+        });
+    }
+
+    private void startEyedrop() {
+        if (doc == null) return;
+        stopPlay();
+        canvas.beginEyedrop(new CanvasView.EyedropListener() {
+            @Override public void onPicked(int argb) {
+                Settings.addRecentColor(EditorActivity.this, argb);
+                setColor(argb);
+                buildPalette();
+                updateOptions();
+                showColorPicker();
+            }
+            @Override public void onCancel() {
+                updateOptions();
+                showColorPicker();
+            }
+        });
+        updateOptions();
+        UI.toast(this, R.string.eyedropper_hint);
+    }
+
     private final class SwatchView extends View {
         private final Paint checker = ColorDialog.checkerPaint(EditorActivity.this, 6);
         private final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -1569,12 +1711,7 @@ public class EditorActivity extends Activity implements CanvasView.Host, Timelin
             setClickable(true);
             setOnClickListener(new View.OnClickListener() {
                 @Override public void onClick(View v) {
-                    ColorDialog.show(EditorActivity.this, ts.color, new ColorDialog.Result() {
-                        @Override public void onColor(int c) {
-                            setColor(c);
-                            buildPalette();
-                        }
-                    });
+                    showColorPicker();
                 }
             });
         }

@@ -85,6 +85,58 @@ public final class Doc {
         return out;
     }
 
+    /** The visible layers of frame f blended at one source pixel index. */
+    private int pixelAt(Frame f, int i) {
+        int d = 0;
+        for (int li = 0, n = layers.size(); li < n; li++) {
+            LayerInfo info = layers.get(li);
+            if (!info.visible || info.opacity == 0) continue;
+            int s = f.px[li][i];
+            if ((s >>> 24) == 0) continue;
+            if (info.opacity < 255) s = Blend.scaleAlpha(s, info.opacity);
+            d = (d == 0) ? s : Blend.over(d, s);
+        }
+        return d;
+    }
+
+    /**
+     * Composites frame f straight into a small tw x th image (used for timeline thumbnails). Cost depends on the
+     * thumbnail size, not on the canvas size, so thousands of frames of a large canvas stay cheap.
+     * Shrinking samples a 2x2 grid per pixel (alpha weighted); enlarging is nearest neighbour.
+     */
+    public void composeThumb(Frame f, int tw, int th, int[] out) {
+        boolean shrink = tw < w || th < h;
+        for (int y = 0; y < th; y++) {
+            for (int x = 0; x < tw; x++) {
+                int color;
+                if (!shrink) {
+                    int sx = Math.min(w - 1, (int) (((long) x * 2 + 1) * w / (2L * tw)));
+                    int sy = Math.min(h - 1, (int) (((long) y * 2 + 1) * h / (2L * th)));
+                    color = pixelAt(f, sy * w + sx);
+                } else {
+                    long a = 0, r = 0, g = 0, b = 0;
+                    for (int q = 0; q < 4; q++) {
+                        long fx = ((long) x * 4 + 1 + (q & 1) * 2) * w / (4L * tw);
+                        long fy = ((long) y * 4 + 1 + (q >> 1) * 2) * h / (4L * th);
+                        int s = pixelAt(f, (int) Math.min(h - 1, fy) * w + (int) Math.min(w - 1, fx));
+                        int sa = s >>> 24;
+                        a += sa;
+                        r += ((s >> 16) & 255) * sa;
+                        g += ((s >> 8) & 255) * sa;
+                        b += (s & 255) * sa;
+                    }
+                    if (a == 0) {
+                        color = 0;
+                    } else {
+                        color = (int) ((a + 2) / 4) << 24 | (int) ((r + a / 2) / a) << 16 | (int) ((g + a / 2) / a) << 8
+                                | (int) ((b + a / 2) / a);
+                    }
+                }
+                out[y * tw + x] = color;
+            }
+        }
+    }
+
     // ---------------------------------------------------------------- layers
 
     public void addLayer(int index, String name) {
@@ -221,6 +273,21 @@ public final class Doc {
     }
 
     public Snapshot snapshot() { return new Snapshot(this); }
+
+    /**
+     * Structure copy that shares the pixel arrays: cheap, and safe to hand to a background thread for saving
+     * while the UI keeps drawing (a stroke that lands mid-save is simply picked up by the next autosave).
+     */
+    public Doc shallowCopy() {
+        Doc c = new Doc(w, h, pixelArt);
+        c.bg = bg;
+        c.loop = loop;
+        c.activeFrame = activeFrame;
+        c.activeLayer = activeLayer;
+        for (LayerInfo l : layers) c.layers.add(l.copy());
+        for (Frame f : frames) c.frames.add(f.shallowCopy());
+        return c;
+    }
 
     public void restore(Snapshot s) {
         layers = new ArrayList<>();
