@@ -28,10 +28,27 @@ public final class History {
 
     private static final class StructCmd implements Command {
         final Doc.Snapshot before, after;
-        StructCmd(Doc.Snapshot b, Doc.Snapshot a) { before = b; after = a; }
+        final long bytes;
+        StructCmd(Doc.Snapshot b, Doc.Snapshot a) { before = b; after = a; bytes = retained(b, a); }
         public void undo(Doc d) { d.restore(before); }
         public void redo(Doc d) { d.restore(after); }
-        public long size() { return 256L * (before.frames.size() + after.frames.size() + 4); }
+        public long size() { return bytes; }
+    }
+
+    /**
+     * Memory a structural command really keeps alive: pixel arrays that only one of the two snapshots references
+     * (arrays shared with the live document cost nothing extra). Counting this keeps the undo budget honest when
+     * frames or layers of a big canvas are added and removed.
+     */
+    static long retained(Doc.Snapshot a, Doc.Snapshot b) {
+        java.util.IdentityHashMap<int[], Integer> inA = new java.util.IdentityHashMap<>();
+        java.util.IdentityHashMap<int[], Integer> inB = new java.util.IdentityHashMap<>();
+        for (Frame f : a.frames) for (int[] p : f.px) inA.put(p, 1);
+        for (Frame f : b.frames) for (int[] p : f.px) inB.put(p, 1);
+        long total = 256L * (a.frames.size() + b.frames.size() + 4);
+        for (int[] p : inA.keySet()) if (!inB.containsKey(p)) total += 4L * p.length;
+        for (int[] p : inB.keySet()) if (!inA.containsKey(p)) total += 4L * p.length;
+        return total;
     }
 
     private final ArrayDeque<Command> undo = new ArrayDeque<>();

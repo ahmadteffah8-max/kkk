@@ -105,4 +105,16 @@
     <string name="frame_of">Frame %1$d / %2$d</string>
     <string name="this_frame_only">This frame only</string>
     <string name="all_frames">All frames (%d)</string>
+    <string name="eyedropper">Pick a color from the picture</string>
+    <string name="eyedropper_hint">Touch the picture to pick a color</string>
+    <string name="overlay_hint">Drag to move · handles resize · tap an empty spot to place</string>
+    <string name="reading_video">Reading video…</string>
+    <string name="placing">Placing…</string>
+    <string name="video_trimmed">The video is longer than 60 seconds: only the first 60 seconds were imported</string>
+    <string name="media_reduced">Some frames were skipped to save memory</string>
+    <string name="choose_source">Open</string>
+    <string name="from_gallery">Gallery (photo / GIF / video)</string>
+    <string name="from_files">Project file (.pxs) or other file</string>
+    <string name="pick_photo">Photo / GIF</string>
+    <string name="pick_video">Video</string>
 </resources>

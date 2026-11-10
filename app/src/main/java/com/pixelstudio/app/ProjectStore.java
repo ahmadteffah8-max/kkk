@@ -120,23 +120,29 @@ public final class ProjectStore {
 
     private static void writeThumb(File f, Doc d) {
         try {
-            int[] comp = d.compose(d.frames.get(0));
-            Bitmap full = Bitmap.createBitmap(d.w, d.h, Bitmap.Config.ARGB_8888);
-            full.setPixels(comp, 0, d.w, 0, 0, d.w, d.h);
             int max = 320;
             float s = Math.min(1f, (float) max / Math.max(d.w, d.h));
-            Bitmap t = full;
+            int tw, th;
             if (s < 1f) {
-                t = Bitmap.createScaledBitmap(full, Math.max(1, Math.round(d.w * s)), Math.max(1, Math.round(d.h * s)), true);
+                tw = Math.max(1, Math.round(d.w * s));
+                th = Math.max(1, Math.round(d.h * s));
             } else if (d.pixelArt) {
                 int k = Math.max(1, Math.min(max / Math.max(d.w, d.h), 16));
-                if (k > 1) t = Bitmap.createScaledBitmap(full, d.w * k, d.h * k, false);
+                tw = d.w * k;
+                th = d.h * k;
+            } else {
+                tw = d.w;
+                th = d.h;
             }
+            // composed straight at thumbnail size: no full-size bitmap, whatever the canvas size
+            int[] px = new int[tw * th];
+            d.composeThumb(d.frames.get(0), tw, th, px);
+            Bitmap t = Bitmap.createBitmap(tw, th, Bitmap.Config.ARGB_8888);
+            t.setPixels(px, 0, tw, 0, 0, tw, th);
             try (OutputStream o = new FileOutputStream(f)) {
                 t.compress(Bitmap.CompressFormat.PNG, 100, o);
             }
-            if (t != full) t.recycle();
-            full.recycle();
+            t.recycle();
         } catch (Exception ignored) {
         }
     }

@@ -463,47 +463,85 @@ public class HomeActivity extends Activity {
 
     // ------------------------------------------------------------------ open file
 
+    /** Photos, GIFs and videos open the phone gallery; project files (.pxs) still need the file picker. */
     private void openFile() {
-        Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
-        i.addCategory(Intent.CATEGORY_OPENABLE);
-        i.setType("*/*");
-        try {
-            startActivityForResult(i, REQ_OPEN);
-        } catch (ActivityNotFoundException e) {
-            UI.toast(this, R.string.no_app_found);
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        final Dialog[] dd = new Dialog[1];
+        View.OnClickListener gallery = new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                dd[0].dismiss();
+                MediaPicker.pick(HomeActivity.this, REQ_OPEN, false);
+            }
+        };
+        View.OnClickListener files = new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                dd[0].dismiss();
+                Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+                i.addCategory(Intent.CATEGORY_OPENABLE);
+                i.setType("*/*");
+                try {
+                    startActivityForResult(i, REQ_OPEN);
+                } catch (ActivityNotFoundException e) {
+                    UI.toast(HomeActivity.this, R.string.no_app_found);
+                }
+            }
+        };
+        int[] texts = {R.string.from_gallery, R.string.from_files};
+        View.OnClickListener[] ls = {gallery, files};
+        for (int k = 0; k < 2; k++) {
+            TextView t = UI.button(this, getString(texts[k]), k == 0 ? UI.ACCENT : UI.SURFACE2, k == 0 ? Color.WHITE : UI.TEXT, ls[k]);
+            LinearLayout.LayoutParams lp = UI.lp(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            lp.bottomMargin = UI.dp(this, 8);
+            box.addView(t, lp);
         }
+        dd[0] = UI.dialog(this, getString(R.string.choose_source), box, null, null, getString(R.string.cancel), null);
+        dd[0].show();
     }
 
     @Override
     protected void onActivityResult(int req, int res, Intent data) {
         super.onActivityResult(req, res, data);
-        if (req != REQ_OPEN || res != RESULT_OK || data == null || data.getData() == null) return;
-        final Uri uri = data.getData();
-        final TextView msg = UI.label(this, getString(R.string.opening), 15, UI.TEXT);
-        final Dialog progress = UI.dialog(this, null, msg, null, null, null, null);
-        progress.setCancelable(false);
-        progress.show();
+        if (req != REQ_OPEN || res != RESULT_OK || data == null) return;
+        Uri picked = data.getData();
+        if (picked == null && data.getClipData() != null && data.getClipData().getItemCount() > 0) {
+            picked = data.getClipData().getItemAt(0).getUri();
+        }
+        if (picked == null) return;
+        final Uri uri = picked;
+        final Busy busy = Busy.show(this, getString(R.string.opening), true);
         new Thread(new Runnable() {
             @Override public void run() {
                 ImportUtil.Loaded l = null;
                 String err = null;
+                boolean cancelled = false;
                 try {
-                    l = ImportUtil.load(HomeActivity.this, uri, Doc.MAX_SIDE);
+                    l = ImportUtil.load(HomeActivity.this, uri, Doc.MAX_SIDE, new ImportUtil.Progress() {
+                        @Override public void onProgress(int percent) { busy.progress(percent); }
+                        @Override public boolean cancelled() { return busy.cancelled(); }
+                    });
+                } catch (ImportUtil.CancelledException t) {
+                    cancelled = true;
                 } catch (Throwable t) {
                     err = t instanceof OutOfMemoryError ? getString(R.string.out_of_memory) : getString(R.string.open_failed);
                 }
                 final ImportUtil.Loaded fl = l;
                 final String ferr = err;
+                final boolean fcancel = cancelled || busy.cancelled();
                 runOnUiThread(new Runnable() {
                     @Override public void run() {
-                        progress.dismiss();
+                        busy.dismiss();
+                        if (isFinishing() || fcancel) return;
                         if (fl == null) {
-                            UI.toast(HomeActivity.this, ferr);
+                            UI.toast(HomeActivity.this, ferr == null ? getString(R.string.open_failed) : ferr);
                             return;
                         }
                         if (fl.project != null) {
                             createAndOpen(fl.project, getString(R.string.imported));
-                        } else if (fl.media.animated()) {
+                            return;
+                        }
+                        if (fl.media.trimmed) UI.toast(HomeActivity.this, R.string.video_trimmed);
+                        if (fl.media.animated()) {
                             // GIF / video: let the person choose one frame or all of them
                             FramePicker.show(HomeActivity.this, fl.media, new FramePicker.Result() {
                                 @Override public void onPick(int frame) { openMedia(fl.media, frame); }

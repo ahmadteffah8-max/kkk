@@ -8,6 +8,7 @@ import android.net.Uri;
 
 import com.pixelstudio.core.Doc;
 import com.pixelstudio.core.Frame;
+import com.pixelstudio.core.FrameSelector;
 import com.pixelstudio.core.GifDecoder;
 import com.pixelstudio.core.LayerInfo;
 import com.pixelstudio.core.ProjectIO;
@@ -119,8 +120,32 @@ public final class ImportUtil {
         /** Play count for the animation (0 = forever). */
         public int plays;
         public boolean video;
+        /** Video only: the clip was longer than the limit and only its first part was used. */
+        public boolean trimmed;
+        /** Video only: length of the source clip in ms. */
+        public long sourceMs;
 
         public boolean animated() { return frames.size() > 1; }
+
+        /** At most max frames, evenly spaced, with the same total running time. */
+        public Media thin(int max) {
+            if (frames.size() <= max) return this;
+            int[] d = new int[delays.size()];
+            for (int i = 0; i < d.length; i++) d[i] = delays.get(i);
+            int[][] t = FrameSelector.thin(d, max);
+            Media m = new Media();
+            m.w = w;
+            m.h = h;
+            m.plays = plays;
+            m.video = video;
+            m.trimmed = trimmed;
+            m.sourceMs = sourceMs;
+            for (int j = 0; j < t[0].length; j++) {
+                m.frames.add(frames.get(t[0][j]));
+                m.delays.add(t[1][j]);
+            }
+            return m;
+        }
 
         /** Copy that holds only frame index (or every frame when index < 0). */
         public Media pick(int index) {
@@ -129,6 +154,8 @@ public final class ImportUtil {
             m.h = h;
             m.plays = plays;
             m.video = video;
+            m.trimmed = trimmed;
+            m.sourceMs = sourceMs;
             for (int i = 0; i < frames.size(); i++) {
                 if (index >= 0 && i != index) continue;
                 m.frames.add(frames.get(i));
@@ -144,9 +171,26 @@ public final class ImportUtil {
         public Media media;
     }
 
+    /** Reports progress of a long import and lets the person cancel it. Called from the worker thread. */
+    public interface Progress {
+        /** 0..100 */
+        void onProgress(int percent);
+        boolean cancelled();
+    }
+
+    /** Thrown when the person cancelled a running import. */
+    public static final class CancelledException extends IOException {
+        public CancelledException() { super("cancelled"); }
+    }
+
+    /** Longest part of a video that is imported. */
+    public static final long VIDEO_MAX_MS = 60_000L;
     private static final int VIDEO_MAX_SIDE = 480;
-    private static final int VIDEO_MAX_FRAMES = 60;
-    private static final long VIDEO_MAX_BYTES = 150L * 1024 * 1024;
+    private static final int VIDEO_ANALYSIS_SIDE = 64;
+    private static final int VIDEO_MAX_CANDIDATES = 300;
+    private static final long VIDEO_MIN_STEP_MS = 100;
+    private static final int VIDEO_MAX_KEEP = 200;
+    private static final long VIDEO_BUDGET_BYTES = 128L * 1024 * 1024;
 
     private static boolean isVideo(Context c, Uri uri) {
         String t = null;
@@ -154,14 +198,36 @@ public final class ImportUtil {
             t = c.getContentResolver().getType(uri);
         } catch (Throwable ignored) {
         }
-        return t != null && t.startsWith("video/");
+        if (t != null && t.startsWith("video/")) return true;
+        if (t != null && t.startsWith("image/")) return false;
+        return sniffVideo(c, uri);
+    }
+
+    /** Looks at the first bytes (MP4/MOV/3GP "ftyp", WebM/MKV, AVI) when the provider gives no usable MIME type. */
+    private static boolean sniffVideo(Context c, Uri uri) {
+        try (InputStream in = c.getContentResolver().openInputStream(uri)) {
+            if (in == null) return false;
+            byte[] h = new byte[12];
+            int n = 0, r;
+            while (n < h.length && (r = in.read(h, n, h.length - n)) > 0) n += r;
+            if (n < 12) return false;
+            if (h[4] == 'f' && h[5] == 't' && h[6] == 'y' && h[7] == 'p') return true;
+            if ((h[0] & 255) == 0x1A && (h[1] & 255) == 0x45 && (h[2] & 255) == 0xDF && (h[3] & 255) == 0xA3) return true;
+            return h[0] == 'R' && h[1] == 'I' && h[2] == 'F' && h[3] == 'F' && h[8] == 'A' && h[9] == 'V' && h[10] == 'I';
+        } catch (Throwable t) {
+            return false;
+        }
     }
 
     /** Reads a project, still image, GIF or video from a content Uri. */
     public static Loaded load(Context c, Uri uri, int maxSide) throws IOException {
+        return load(c, uri, maxSide, null);
+    }
+
+    public static Loaded load(Context c, Uri uri, int maxSide, Progress pg) throws IOException {
         Loaded l = new Loaded();
         if (isVideo(c, uri)) {
-            l.media = decodeVideo(c, uri);
+            l.media = decodeVideo(c, uri, pg);
             return l;
         }
         byte[] data = readAll(c, uri);
@@ -190,8 +256,29 @@ public final class ImportUtil {
         return l;
     }
 
-    /** Samples a video into frames (at most 60, longest side 480px) keeping its real duration. */
-    private static Media decodeVideo(Context c, Uri uri) throws IOException {
+    private static int[] pixelsOf(Bitmap b, int w, int h) {
+        if (b.getWidth() != w || b.getHeight() != h) {
+            Bitmap n = Bitmap.createScaledBitmap(b, w, h, true);
+            if (n != b) b.recycle();
+            b = n;
+        }
+        int[] px = new int[w * h];
+        b.getPixels(px, 0, w, 0, 0, w, h);
+        b.recycle();
+        return px;
+    }
+
+    private static void checkCancel(Progress pg) throws CancelledException {
+        if (pg != null && pg.cancelled()) throw new CancelledException();
+    }
+
+    /**
+     * Turns a video into editable frames. At most the first 60 seconds are used. The clip is sampled at an even
+     * rate into tiny analysis snapshots, {@link FrameSelector} drops the ones that look the same as the last kept
+     * frame (their time is added to the kept frame's duration) while keeping every visible change, and only the
+     * chosen frames are then read at full size. Timing of the clip is preserved.
+     */
+    private static Media decodeVideo(Context c, Uri uri, Progress pg) throws IOException {
         MediaMetadataRetriever r = new MediaMetadataRetriever();
         try {
             r.setDataSource(c, uri);
@@ -205,38 +292,76 @@ public final class ImportUtil {
                 vw = vh;
                 vh = t;
             }
+            if (dur <= 0) dur = 1;
+            boolean trimmed = dur > VIDEO_MAX_MS;
+            long useMs = Math.min(dur, VIDEO_MAX_MS);
+
             float s = Math.min(1f, (float) VIDEO_MAX_SIDE / Math.max(vw, vh));
             int w = Math.max(1, Math.round(vw * s)), h = Math.max(1, Math.round(vh * s));
-            int count = (int) Math.max(1, Math.min(VIDEO_MAX_FRAMES, dur / 100));
-            count = (int) Math.max(1, Math.min(count, VIDEO_MAX_BYTES / ((long) w * h * 4)));
-            long stepMs = Math.max(1, dur / count);
+            float as = Math.min(1f, (float) VIDEO_ANALYSIS_SIDE / Math.max(w, h));
+            int aw = Math.max(1, Math.round(w * as)), ah = Math.max(1, Math.round(h * as));
 
+            long step = Math.max(VIDEO_MIN_STEP_MS, (useMs + VIDEO_MAX_CANDIDATES - 1) / VIDEO_MAX_CANDIDATES);
+            int count = (int) Math.max(1, useMs / step);
+
+            // pass 1: tiny snapshots of evenly spaced moments (0..70 % of the work)
+            int[][] thumbs = new int[count][];
+            long[] times = new long[count];
+            boolean any = false;
+            for (int i = 0; i < count; i++) {
+                checkCancel(pg);
+                times[i] = i * step;
+                Bitmap b = null;
+                try {
+                    b = r.getScaledFrameAtTime(times[i] * 1000L, MediaMetadataRetriever.OPTION_CLOSEST, aw, ah);
+                } catch (RuntimeException ignored) {
+                }
+                if (b != null) {
+                    thumbs[i] = pixelsOf(b, aw, ah);
+                    any = true;
+                }
+                if (pg != null) pg.onProgress((int) ((i + 1) * 70L / count));
+            }
+            if (!any) throw new IOException("no video frames");
+
+            long perFrame = (long) w * h * 4L;
+            int maxKeep = (int) Math.max(4, Math.min(VIDEO_MAX_KEEP, VIDEO_BUDGET_BYTES / perFrame));
+            FrameSelector.Result sel = FrameSelector.select(thumbs, times, useMs, maxKeep);
+
+            // pass 2: full size only for the frames worth keeping (70..100 %)
             Media m = new Media();
             m.video = true;
             m.plays = 0;
-            for (int i = 0; i < count; i++) {
-                Bitmap b = r.getScaledFrameAtTime(i * stepMs * 1000L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC, w, h);
+            m.trimmed = trimmed;
+            m.sourceMs = dur;
+            long carry = 0;
+            for (int j = 0; j < sel.keep.length; j++) {
+                checkCancel(pg);
+                Bitmap b = null;
+                try {
+                    b = r.getScaledFrameAtTime(times[sel.keep[j]] * 1000L, MediaMetadataRetriever.OPTION_CLOSEST, w, h);
+                } catch (RuntimeException ignored) {
+                }
+                int delay = (int) Math.min(FrameSelector.MAX_DELAY_MS, sel.delaysMs[j] + carry);
                 if (b == null) {
-                    if (m.frames.isEmpty()) continue;
-                    // keep timing: repeat the previous frame
-                    m.frames.add(m.frames.get(m.frames.size() - 1));
-                    m.delays.add((int) Math.max(20, stepMs));
-                    continue;
+                    if (m.frames.isEmpty()) {
+                        carry += sel.delaysMs[j]; // nothing to repeat yet: give its time to the next frame
+                    } else {
+                        // keep the timing: lengthen the previous frame
+                        int last = m.delays.size() - 1;
+                        m.delays.set(last, (int) Math.min(FrameSelector.MAX_DELAY_MS, m.delays.get(last) + delay));
+                        carry = 0;
+                    }
+                } else {
+                    if (m.frames.isEmpty()) {
+                        m.w = b.getWidth();
+                        m.h = b.getHeight();
+                    }
+                    m.frames.add(pixelsOf(b, m.w, m.h));
+                    m.delays.add(delay);
+                    carry = 0;
                 }
-                if (m.frames.isEmpty()) {
-                    m.w = b.getWidth();
-                    m.h = b.getHeight();
-                }
-                if (b.getWidth() != m.w || b.getHeight() != m.h) {
-                    Bitmap n = Bitmap.createScaledBitmap(b, m.w, m.h, true);
-                    b.recycle();
-                    b = n;
-                }
-                int[] px = new int[m.w * m.h];
-                b.getPixels(px, 0, m.w, 0, 0, m.w, m.h);
-                b.recycle();
-                m.frames.add(px);
-                m.delays.add((int) Math.max(20, stepMs));
+                if (pg != null) pg.onProgress(70 + (int) ((j + 1) * 30L / sel.keep.length));
             }
             if (m.frames.isEmpty()) throw new IOException("no video frames");
             return m;
@@ -262,6 +387,8 @@ public final class ImportUtil {
         Media r = new Media();
         r.plays = m.plays;
         r.video = m.video;
+        r.trimmed = m.trimmed;
+        r.sourceMs = m.sourceMs;
         r.delays.addAll(m.delays);
         for (int[] f : m.frames) {
             Img i = new Img();

@@ -140,6 +140,9 @@ public final class ColorDialog {
     private GridLayout grid;
     private boolean updating;
 
+    private Runnable eyedrop;
+    private Dialog dlg;
+
     private ColorDialog(Context c, int color, Result r) {
         ctx = c;
         result = r;
@@ -150,6 +153,16 @@ public final class ColorDialog {
 
     public static void show(Context c, int color, Result r) {
         new ColorDialog(c, color, r).build();
+    }
+
+    /**
+     * Same, with an eyedropper button: the dialog closes and eyedrop runs so the caller can let the person
+     * touch the drawing to take a color; the caller shows the dialog again afterwards.
+     */
+    public static void show(Context c, int color, Result r, Runnable eyedrop) {
+        ColorDialog cd = new ColorDialog(c, color, r);
+        cd.eyedrop = eyedrop;
+        cd.build();
     }
 
     private int current() {
@@ -259,6 +272,17 @@ public final class ColorDialog {
         });
         hexRow.addView(hex, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         hexRow.addView(UI.spacer(ctx, 8, 1));
+        if (eyedrop != null) {
+            IconView eye = UI.iconButton(ctx, IconView.PICKER, 40, new View.OnClickListener() {
+                @Override public void onClick(View v) {
+                    if (dlg != null) dlg.dismiss();
+                    eyedrop.run();
+                }
+            });
+            eye.setBackground(UI.rounded(UI.SURFACE2, 10, ctx));
+            hexRow.addView(eye);
+            hexRow.addView(UI.spacer(ctx, 6, 1));
+        }
         hexRow.addView(UI.button(ctx, ctx.getString(R.string.save_color), UI.SURFACE2, UI.TEXT, new View.OnClickListener() {
             @Override public void onClick(View v) {
                 Settings.addCustomColor(ctx, current());
@@ -319,6 +343,7 @@ public final class ColorDialog {
                 result.onColor(c);
             }
         }, ctx.getString(R.string.cancel), null);
+        dlg = d;
         d.show();
     }
 
