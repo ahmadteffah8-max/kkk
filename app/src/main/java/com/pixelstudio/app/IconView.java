@@ -16,7 +16,7 @@ public class IconView extends View {
             EYE_OFF = 24, UP = 25, DOWN = 26, MORE = 27, BACK = 28, ZOOM_IN = 29, ZOOM_OUT = 30, FIT = 31,
             PREVIEW = 32, IMAGE = 33, CHECK = 34, MERGE = 35, CUT = 36, PASTE = 37, CLOSE = 38, LOOP = 39,
             LEFT = 40, RIGHT = 41, SETTINGS = 42, SAVE = 43, CLOCK = 44, FRAMES = 45, SELECT_ALL = 46,
-            GLOBE = 47, EDIT = 48, SHARE = 49, FOLDER = 50;
+            GLOBE = 47, EDIT = 48, SHARE = 49, FOLDER = 50, WAND = 51, SHADE = 52, PEN_TYPE = 53;
 
     private int icon;
     private int color = UI.TEXT;
@@ -34,6 +34,7 @@ public class IconView extends View {
         stroke.setStrokeWidth(2f);
         fill.setStyle(Paint.Style.FILL);
         setClickable(true);
+        setBackground(UI.ripple(null, 10, c));
     }
 
     public void setIcon(int icon) {
@@ -51,7 +52,7 @@ public class IconView extends View {
     /** Active tools get an accent background. */
     public void setActive(boolean a) {
         active = a;
-        setBackground(a ? UI.rounded(UI.ACCENT, 10, getContext()) : null);
+        setBackground(UI.ripple(a ? UI.rounded(UI.ACCENT, 10, getContext()) : null, 10, getContext()));
         invalidate();
     }
 
@@ -367,6 +368,29 @@ public class IconView extends View {
                 break;
             case FOLDER:
                 poly(c, true, 3, 6, 9, 6, 11, 8, 21, 8, 21, 19, 3, 19);
+                break;
+            case WAND:
+                stroke.setStrokeWidth(3.2f);
+                line(c, 4.5f, 19.5f, 12.5f, 11.5f);
+                stroke.setStrokeWidth(2f);
+                line(c, 17, 3.5f, 17, 10.5f);
+                line(c, 13.5f, 7, 20.5f, 7);
+                dot(c, 20, 15, 1.3f, true);
+                dot(c, 7.5f, 6, 1.3f, true);
+                break;
+            case SHADE:
+                rf.set(4, 4, 20, 20);
+                c.drawRoundRect(rf, 3, 3, stroke);
+                stroke.setStrokeWidth(1.6f);
+                line(c, 4, 13, 13, 4);
+                line(c, 4, 20, 20, 4);
+                line(c, 11, 20, 20, 11);
+                stroke.setStrokeWidth(2f);
+                break;
+            case PEN_TYPE:
+                poly(c, true, 4, 20, 5.5f, 14.5f, 15, 5, 19, 9, 9.5f, 18.5f);
+                line(c, 13, 7, 17, 11);
+                line(c, 14, 21, 21, 21);
                 break;
             default:
                 break;

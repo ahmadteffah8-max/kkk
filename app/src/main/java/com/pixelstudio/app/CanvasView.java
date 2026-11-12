@@ -108,7 +108,7 @@ public class CanvasView extends View {
     // ---- single pointer state
     private int mode; // see M_*
     private static final int M_NONE = 0, M_STROKE = 1, M_SHAPE = 2, M_PAN = 3, M_BUCKET = 4, M_PICK = 5,
-            M_SELECTING = 6, M_MOVING = 7, M_OVL = 8, M_OVL_TAP = 9, M_EYE = 10;
+            M_SELECTING = 6, M_MOVING = 7, M_OVL = 8, M_OVL_TAP = 9, M_EYE = 10, M_WAND = 11;
     private int lastIx, lastIy, startIx, startIy;
     private float lastX, lastY;
     private int dirtyX0, dirtyY0, dirtyX1, dirtyY1;
@@ -116,6 +116,10 @@ public class CanvasView extends View {
 
     // ---- selection / floating
     private int[] sel; // x0,y0,x1,y1 (exclusive end)
+    /** Smart (magic wand) selection: mask local to the selection box; valid only while maskSel == sel. */
+    private boolean[] selMask;
+    private int[] maskSel;
+    private Bitmap maskBmp;
     private boolean autoSel;
     private boolean floating, floatPersistent, moveStarted;
     private int[] fbuf;
@@ -418,6 +422,10 @@ public class CanvasView extends View {
 
         if (sel != null) {
             tmpR.set(L + sel[0] * scale, T + sel[1] * scale, L + sel[2] * scale, T + sel[3] * scale);
+            if (activeMask() != null && maskBmp != null) {
+                imgPaint.setFilterBitmap(false);
+                c.drawBitmap(maskBmp, null, tmpR, imgPaint);
+            }
             c.drawRect(tmpR, antsBlack);
             c.drawRect(tmpR, antsWhite);
         }
@@ -826,9 +834,19 @@ public class CanvasView extends View {
             case ToolState.BUCKET:
                 mode = M_BUCKET;
                 break;
+            case ToolState.WAND:
+                if (sel != null && ix >= sel[0] && ix < sel[2] && iy >= sel[1] && iy < sel[3]) {
+                    if (!canDraw()) return;
+                    mode = M_MOVING; // drag a smart selection to move the cut-out
+                    moveStarted = false;
+                } else {
+                    mode = M_WAND;
+                }
+                break;
             case ToolState.PENCIL:
             case ToolState.BRUSH:
             case ToolState.ERASER:
+            case ToolState.SHADE:
                 if (!canDraw()) return;
                 beginStroke();
                 mode = M_STROKE;
@@ -977,6 +995,9 @@ public class CanvasView extends View {
                     if (canDraw()) fillAt(toIx(e.getX()), toIy(e.getY()));
                 }
                 break;
+            case M_WAND:
+                if (!cancel && !moved(e)) wandAt(toIx(e.getX()), toIy(e.getY()));
+                break;
             case M_EYE:
                 if (!cancel) eyeFinish();
                 else {
@@ -1051,7 +1072,19 @@ public class CanvasView extends View {
             aa = !doc.pixelArt;
             square = doc.pixelArt;
         }
+        int style = Stroke.ST_NORMAL, opacity = 100;
+        if (tool == ToolState.BRUSH) {
+            style = ts.brushStyle;
+            opacity = ts.brushOpacity;
+        } else if (tool == ToolState.SHADE) {
+            aa = !doc.pixelArt;
+            square = doc.pixelArt;
+            opacity = ts.shadeStrength;
+            style = ts.shadeMode == ToolState.SHADE_LIGHT ? Stroke.ST_SHADE_LIGHT
+                    : ts.shadeMode == ToolState.SHADE_HATCH ? Stroke.ST_HATCH : Stroke.ST_SHADE_DARK;
+        }
         stroke.begin(doc.layerPixels(), ts.color, ts.size(), erase, aa, square, selClip());
+        stroke.setStyle(style, opacity);
     }
 
     private int[] selClip() {
@@ -1122,7 +1155,23 @@ public class CanvasView extends View {
         if (ix < 0 || iy < 0 || ix >= doc.w || iy >= doc.h) return;
         int[] layer = doc.layerPixels();
         int[] before = layer.clone();
-        int[] r = FloodFill.fill(layer, doc.w, doc.h, ix, iy, ts.color, ts.tolerance, selClip());
+        int opacity = Math.max(1, Math.min(100, ts.fillOpacity)) * 255 / 100;
+        int[] r;
+        if (ts.fillMode == ToolState.FILL_INSIDE) {
+            // the outline is read from what the person sees (all layers), the colour goes into the active layer
+            r = FloodFill.fillInside(comp, layer, doc.w, doc.h, ix, iy, ts.color, opacity, ts.edgeColor,
+                    ts.edgeTol, ts.gap, selClip());
+            if (r == FloodFill.LEAK) {
+                if (host != null) host.onMessage(R.string.fill_leak);
+                return;
+            }
+            if (r == FloodFill.ON_EDGE) {
+                if (host != null) host.onMessage(R.string.fill_on_edge);
+                return;
+            }
+        } else {
+            r = FloodFill.fill(layer, doc.w, doc.h, ix, iy, ts.color, ts.tolerance, opacity, selClip());
+        }
         if (r == null) return;
         Patch p = Patch.fromDiff(before, layer, doc.w, r[0], r[1], r[2], r[3]);
         if (p == null) return;
@@ -1135,6 +1184,33 @@ public class CanvasView extends View {
     }
 
     // ------------------------------------------------------------------ selection & floating
+
+    private boolean[] activeMask() {
+        return (selMask != null && sel != null && sel == maskSel && !floating) ? selMask : null;
+    }
+
+    /** Smart selection: selects exactly the shape (or colour area) under the tap. */
+    private void wandAt(int ix, int iy) {
+        if (ix < 0 || iy < 0 || ix >= doc.w || iy >= doc.h) return;
+        commitFloating();
+        FloodFill.Region r = FloodFill.region(doc.layerPixels(), doc.w, doc.h, ix, iy,
+                ts.wandTol, ts.wandObject, null);
+        if (r == null || r.count == 0) {
+            if (host != null) host.onMessage(R.string.wand_nothing);
+            return;
+        }
+        sel = new int[]{r.x, r.y, r.x + r.w, r.y + r.h};
+        autoSel = false;
+        selMask = r.mask;
+        maskSel = sel;
+        int[] tint = new int[r.w * r.h];
+        for (int i = 0; i < tint.length; i++) tint[i] = r.mask[i] ? 0x553B82F6 : 0;
+        if (maskBmp != null) maskBmp.recycle();
+        maskBmp = Bitmap.createBitmap(r.w, r.h, Bitmap.Config.ARGB_8888);
+        maskBmp.setPixels(tint, 0, r.w, 0, 0, r.w, r.h);
+        invalidate();
+        if (host != null) host.onRequestTool(ToolState.WAND); // refreshes the options (cut / copy buttons)
+    }
 
     public void selectAll() {
         commitFloating();
@@ -1155,12 +1231,24 @@ public class CanvasView extends View {
         fw = sel[2] - sel[0];
         fh = sel[3] - sel[1];
         fbuf = new int[fw * fh];
-        for (int y = 0; y < fh; y++) {
-            System.arraycopy(layer, (sel[1] + y) * doc.w + sel[0], fbuf, y * fw, fw);
-        }
+        boolean[] mk = activeMask();
         layerBefore = layer.clone();
-        for (int y = 0; y < fh; y++) {
-            java.util.Arrays.fill(layer, (sel[1] + y) * doc.w + sel[0], (sel[1] + y) * doc.w + sel[2], 0);
+        if (mk == null) {
+            for (int y = 0; y < fh; y++) {
+                System.arraycopy(layer, (sel[1] + y) * doc.w + sel[0], fbuf, y * fw, fw);
+            }
+            for (int y = 0; y < fh; y++) {
+                java.util.Arrays.fill(layer, (sel[1] + y) * doc.w + sel[0], (sel[1] + y) * doc.w + sel[2], 0);
+            }
+        } else {
+            for (int y = 0; y < fh; y++) {
+                for (int x = 0; x < fw; x++) {
+                    if (!mk[y * fw + x]) continue;
+                    int li = (sel[1] + y) * doc.w + sel[0] + x;
+                    fbuf[y * fw + x] = layer[li];
+                    layer[li] = 0;
+                }
+            }
         }
         fx = sel[0];
         fy = sel[1];
@@ -1271,7 +1359,9 @@ public class CanvasView extends View {
         int w = sel[2] - sel[0], h = sel[3] - sel[1];
         int[] layer = doc.layerPixels();
         int[] buf = new int[w * h];
+        boolean[] mk = activeMask();
         for (int y = 0; y < h; y++) System.arraycopy(layer, (sel[1] + y) * doc.w + sel[0], buf, y * w, w);
+        if (mk != null) for (int i = 0; i < buf.length; i++) if (!mk[i]) buf[i] = 0;
         Clipboard.px = buf;
         Clipboard.w = w;
         Clipboard.h = h;
@@ -1292,14 +1382,20 @@ public class CanvasView extends View {
         int w = sel[2] - sel[0], h = sel[3] - sel[1];
         int[] layer = doc.layerPixels();
         int[] before = new int[w * h];
+        int[] after = new int[w * h];
+        boolean[] mk = activeMask();
         boolean any = false;
         for (int y = 0; y < h; y++) {
             System.arraycopy(layer, (sel[1] + y) * doc.w + sel[0], before, y * w, w);
-            java.util.Arrays.fill(layer, (sel[1] + y) * doc.w + sel[0], (sel[1] + y) * doc.w + sel[2], 0);
         }
-        for (int v : before) if (v != 0) { any = true; break; }
+        for (int i = 0; i < before.length; i++) {
+            boolean cut = mk == null || mk[i];
+            after[i] = cut ? 0 : before[i];
+            if (cut && before[i] != 0) any = true;
+        }
         if (!any) return;
-        history.pushPatch(doc, doc.activeFrame, doc.activeLayer, new Patch(sel[0], sel[1], w, h, before, new int[w * h]));
+        for (int y = 0; y < h; y++) System.arraycopy(after, y * w, layer, (sel[1] + y) * doc.w + sel[0], w);
+        history.pushPatch(doc, doc.activeFrame, doc.activeLayer, new Patch(sel[0], sel[1], w, h, before, after));
         refreshRegion(sel[0], sel[1], w, h);
         if (host != null) {
             host.onHistoryChanged();

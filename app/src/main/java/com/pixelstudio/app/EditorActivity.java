@@ -9,6 +9,7 @@ import android.content.Intent;
 import android.content.res.ColorStateList;
 import android.content.res.Configuration;
 import android.graphics.Canvas;
+import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.RectF;
@@ -18,11 +19,13 @@ import android.os.Handler;
 import android.os.Looper;
 import android.view.Gravity;
 import android.view.KeyEvent;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowManager;
 import android.widget.FrameLayout;
 import android.widget.HorizontalScrollView;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.SeekBar;
@@ -35,6 +38,7 @@ import com.pixelstudio.core.Frame;
 import com.pixelstudio.core.History;
 import com.pixelstudio.core.LayerInfo;
 import com.pixelstudio.core.Patch;
+import com.pixelstudio.core.Stroke;
 
 import java.io.File;
 import java.io.FileOutputStream;
@@ -153,12 +157,16 @@ public class EditorActivity extends Activity implements CanvasView.Host, Timelin
         ts.sizes[ToolState.LINE] = px ? 1 : 3;
         ts.sizes[ToolState.RECT] = px ? 1 : 3;
         ts.sizes[ToolState.ELLIPSE] = px ? 1 : 3;
+        ts.sizes[ToolState.SHADE] = px ? 2 : 24;
+        int savedStyle = Settings.getInt(this, "brushStyle", Stroke.ST_NORMAL);
+        ts.brushStyle = isPenStyle(savedStyle) ? savedStyle : Stroke.ST_NORMAL;
+        ts.brushOpacity = defaultOpacity(ts.brushStyle);
         ts.color = Settings.getInt(this, "color", 0xFF000000);
         if ((ts.color >>> 24) == 0) ts.color = 0xFF000000;
         ts.grid = px && doc.w <= 128;
         ts.gridStep = 1;
         ts.tolerance = 0;
-        ts.tool = ToolState.PENCIL;
+        ts.tool = px ? ToolState.PENCIL : ToolState.BRUSH; // drawing projects open with a soft pen
     }
 
     @Override
@@ -266,6 +274,22 @@ public class EditorActivity extends Activity implements CanvasView.Host, Timelin
         return v;
     }
 
+    /** Thin line that separates groups of tools. */
+    private View divider() {
+        View v = new View(this);
+        v.setBackgroundColor(UI.SURFACE3);
+        LinearLayout.LayoutParams lp = landscape ? UI.lp(this, 26, 1) : UI.lp(this, 1, 26);
+        if (landscape) {
+            lp.topMargin = UI.dp(this, 4);
+            lp.bottomMargin = UI.dp(this, 4);
+        } else {
+            lp.leftMargin = UI.dp(this, 4);
+            lp.rightMargin = UI.dp(this, 4);
+        }
+        v.setLayoutParams(lp);
+        return v;
+    }
+
     private IconView action(int icon, View.OnClickListener l) {
         return UI.iconButton(this, icon, 44, l);
     }
@@ -283,16 +307,23 @@ public class EditorActivity extends Activity implements CanvasView.Host, Timelin
         toolsHolder.setGravity(Gravity.CENTER);
         int[][] defs = {
                 {ToolState.PENCIL, IconView.PENCIL}, {ToolState.BRUSH, IconView.BRUSH},
+                {ToolState.SHADE, IconView.SHADE},
                 {ToolState.ERASER, IconView.ERASER}, {ToolState.BUCKET, IconView.BUCKET},
                 {ToolState.LINE, IconView.LINE}, {ToolState.RECT, IconView.RECT},
-                {ToolState.ELLIPSE, IconView.CIRCLE}, {ToolState.SELECT, IconView.SELECT},
+                {ToolState.ELLIPSE, IconView.CIRCLE}, {ToolState.WAND, IconView.WAND},
+                {ToolState.SELECT, IconView.SELECT},
                 {ToolState.MOVE, IconView.MOVE}, {ToolState.HAND, IconView.HAND},
                 {ToolState.PICKER, IconView.PICKER}};
         if (landscape) {
             swatch = new SwatchView(this);
             toolsHolder.addView(swatch, UI.lp(this, 36, 36));
         }
-        for (int[] d : defs) toolsHolder.addView(tool(d[0], d[1]));
+        for (int[] d : defs) {
+            toolsHolder.addView(tool(d[0], d[1]));
+            if (d[0] == ToolState.ERASER || d[0] == ToolState.ELLIPSE || d[0] == ToolState.MOVE) {
+                toolsHolder.addView(divider());
+            }
+        }
         toolsHolder.addView(UI.spacer(this, 8, 8));
         gridBtn = action(IconView.GRID, new View.OnClickListener() {
             @Override public void onClick(View v) {
@@ -529,7 +560,8 @@ public class EditorActivity extends Activity implements CanvasView.Host, Timelin
 
     private void addPaletteSwatch(final int c) {
         View v = new View(this);
-        v.setBackground(UI.roundedStroke(c, 0x66FFFFFF, 1, 6, this));
+        boolean on = c == ts.color;
+        v.setBackground(on ? UI.roundedStroke(c, UI.ACCENT, 3, 8, this) : UI.roundedStroke(c, 0x66FFFFFF, 1, 8, this));
         v.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View x) { setColor(c); }
         });
@@ -542,6 +574,7 @@ public class EditorActivity extends Activity implements CanvasView.Host, Timelin
         ts.color = c;
         if ((c >>> 24) != 0) Settings.putInt(this, "color", c);
         if (swatch != null) swatch.invalidate();
+        buildPalette();
         if (ts.tool == ToolState.PICKER) return;
     }
 
@@ -600,21 +633,24 @@ public class EditorActivity extends Activity implements CanvasView.Host, Timelin
             return;
         }
         if (ts.usesSize()) {
-            final TextView lbl = UI.bold(this, getString(R.string.size) + " " + ts.size(), 13, UI.TEXT);
-            lbl.setMinWidth(UI.dp(this, 64));
-            addOpt(lbl);
-            int max = doc.pixelArt ? Math.max(2, Math.min(64, Math.max(doc.w, doc.h) / 2)) : 128;
             final int tool = t;
-            SeekBar sb = slider(max - 1, Math.min(max, ts.size()) - 1, new SeekBar.OnSeekBarChangeListener() {
-                @Override public void onProgressChanged(SeekBar s, int p, boolean user) {
-                    ts.sizes[tool] = p + 1;
-                    lbl.setText(getString(R.string.size) + " " + (p + 1));
-                }
-                @Override public void onStartTrackingTouch(SeekBar s) {}
-                @Override public void onStopTrackingTouch(SeekBar s) {}
-            });
-            addOpt(sb);
-            sb.getLayoutParams().width = UI.dp(this, 190);
+            if (t == ToolState.BRUSH) addPenTypeButton();
+            if (t == ToolState.SHADE) addShadeModes();
+            int max = doc.pixelArt ? Math.max(2, Math.min(64, Math.max(doc.w, doc.h) / 2)) : 128;
+            new IntControl(getString(R.string.size), 1, max, Math.min(max, ts.size()), true, true, "", new IntSink() {
+                @Override public void set(int v) { ts.sizes[tool] = v; }
+            }).addTo(true);
+            if (t == ToolState.BRUSH) {
+                new IntControl(getString(R.string.opacity), 1, 100, ts.brushOpacity, false, false, "%", new IntSink() {
+                    @Override public void set(int v) { ts.brushOpacity = v; }
+                }).addTo(false);
+            }
+            if (t == ToolState.SHADE) {
+                new IntControl(getString(R.string.strength), 1, 100, ts.shadeStrength, false, false, "%", new IntSink() {
+                    @Override public void set(int v) { ts.shadeStrength = v; }
+                }).addTo(false);
+                addOpt(hint(R.string.hint_shade));
+            }
             if (ToolState.isShapeTool(t)) {
                 final TextView fill = UI.button(this, getString(ts.fillShape ? R.string.filled : R.string.outline),
                         UI.SURFACE3, UI.TEXT, null);
@@ -628,20 +664,9 @@ public class EditorActivity extends Activity implements CanvasView.Host, Timelin
             }
             if (t == ToolState.PENCIL && doc.pixelArt) addOpt(hint(R.string.hint_pixel_pencil));
         } else if (t == ToolState.BUCKET) {
-            final TextView lbl = UI.bold(this, getString(R.string.tolerance) + " " + ts.tolerance, 13, UI.TEXT);
-            lbl.setMinWidth(UI.dp(this, 90));
-            addOpt(lbl);
-            SeekBar sb = slider(128, ts.tolerance, new SeekBar.OnSeekBarChangeListener() {
-                @Override public void onProgressChanged(SeekBar s, int p, boolean user) {
-                    ts.tolerance = p;
-                    lbl.setText(getString(R.string.tolerance) + " " + p);
-                }
-                @Override public void onStartTrackingTouch(SeekBar s) {}
-                @Override public void onStopTrackingTouch(SeekBar s) {}
-            });
-            addOpt(sb);
-            sb.getLayoutParams().width = UI.dp(this, 190);
-        } else if (t == ToolState.SELECT || t == ToolState.MOVE) {
+            addBucketOptions();
+        } else if (t == ToolState.SELECT || t == ToolState.MOVE || t == ToolState.WAND) {
+            if (t == ToolState.WAND) addWandModes();
             if (canvas.isFloating()) {
                 addOpt(UI.button(this, getString(R.string.place), UI.ACCENT, Color.WHITE, new View.OnClickListener() {
                     @Override public void onClick(View v) {
@@ -671,7 +696,8 @@ public class EditorActivity extends Activity implements CanvasView.Host, Timelin
             addOpt(optIcon(IconView.IMAGE, new View.OnClickListener() {
                 @Override public void onClick(View v) { pickImage(); }
             }));
-            addOpt(hint(t == ToolState.SELECT ? R.string.hint_select : R.string.hint_move));
+            addOpt(hint(t == ToolState.SELECT ? R.string.hint_select
+                    : t == ToolState.WAND ? R.string.hint_wand : R.string.hint_move));
         } else if (t == ToolState.HAND) {
             addOpt(hint(R.string.hint_hand));
         } else if (t == ToolState.PICKER) {
@@ -679,9 +705,375 @@ public class EditorActivity extends Activity implements CanvasView.Host, Timelin
         }
     }
 
+    // ------------------------------------------------------------------ smooth numeric controls
+
+    private interface IntSink { void set(int v); }
+
+    private static int curveToValue(int p, int min, int max, boolean curved) {
+        double t = p / 1000.0;
+        if (curved) t = t * t; // finer steps at the small end
+        return min + (int) Math.round((max - min) * t);
+    }
+
+    private static int valueToCurve(int v, int min, int max, boolean curved) {
+        if (max <= min) return 0;
+        double t = Math.max(0, Math.min(1, (v - min) / (double) (max - min)));
+        if (curved) t = Math.sqrt(t);
+        return (int) Math.round(t * 1000);
+    }
+
+    /** Repeats a step while a button is held. */
+    private final class Repeater implements Runnable {
+        private final Runnable step;
+        private boolean on;
+
+        Repeater(Runnable step) { this.step = step; }
+
+        void start() {
+            on = true;
+            step.run();
+            handler.postDelayed(this, 350);
+        }
+
+        void stop() {
+            on = false;
+            handler.removeCallbacks(this);
+        }
+
+        @Override public void run() {
+            if (!on) return;
+            step.run();
+            handler.postDelayed(this, 55);
+        }
+    }
+
+    /** Round preview of the brush size next to its slider. */
+    private final class SizeDot extends View {
+        private final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private float frac = 0.1f;
+
+        SizeDot(Context c) { super(c); }
+
+        void set(int v, int max) {
+            frac = (float) Math.sqrt(Math.max(1, v) / (double) Math.max(1, max));
+            invalidate();
+        }
+
+        @Override protected void onDraw(Canvas c) {
+            float cx = getWidth() / 2f, cy = getHeight() / 2f;
+            float rmax = Math.min(cx, cy) - UI.dp(getContext(), 2);
+            p.setStyle(Paint.Style.STROKE);
+            p.setStrokeWidth(UI.dp(getContext(), 1));
+            p.setColor(UI.TEXT2);
+            c.drawCircle(cx, cy, rmax, p);
+            p.setStyle(Paint.Style.FILL);
+            p.setColor((ts.color >>> 24) == 0 ? UI.TEXT : (ts.color | 0xFF000000));
+            c.drawCircle(cx, cy, Math.max(UI.dp(getContext(), 1.5f), rmax * frac), p);
+        }
+    }
+
+    /** Label (tap it to type an exact value) + wide slider + optional −/+ buttons for one whole-number option. */
+    private final class IntControl {
+        final String name, suffix;
+        final int min, max;
+        final boolean curved;
+        final IntSink sink;
+        final boolean showDot;
+        int cur;
+        final TextView lbl;
+        final SeekBar sb;
+        final SizeDot dot;
+
+        IntControl(String name, int min, int max, int value, boolean curved, boolean showDot, String suffix, IntSink sink) {
+            this.name = name;
+            this.min = min;
+            this.max = max;
+            this.curved = curved;
+            this.showDot = showDot;
+            this.suffix = suffix;
+            this.sink = sink;
+            cur = Math.max(min, Math.min(max, value));
+            lbl = UI.bold(EditorActivity.this, "", 13, UI.TEXT);
+            lbl.setMinWidth(UI.dp(EditorActivity.this, 72));
+            lbl.setGravity(Gravity.CENTER);
+            int ph = UI.dp(EditorActivity.this, 8), pv = UI.dp(EditorActivity.this, 6);
+            lbl.setPadding(ph, pv, ph, pv);
+            lbl.setBackground(UI.rounded(UI.SURFACE3, 8, EditorActivity.this));
+            lbl.setOnClickListener(new View.OnClickListener() {
+                @Override public void onClick(View v) {
+                    UI.promptNumber(EditorActivity.this, getString(R.string.size_exact), cur, IntControl.this.min,
+                            IntControl.this.max, getString(R.string.ok), getString(R.string.cancel), new UI.IntResult() {
+                                @Override public void onInt(int val) { set(val, true); }
+                            });
+                }
+            });
+            sb = slider(1000, valueToCurve(cur, min, max, curved), new SeekBar.OnSeekBarChangeListener() {
+                @Override public void onProgressChanged(SeekBar s, int p, boolean user) {
+                    if (user) set(curveToValue(p, IntControl.this.min, IntControl.this.max, IntControl.this.curved), false);
+                }
+                @Override public void onStartTrackingTouch(SeekBar s) {}
+                @Override public void onStopTrackingTouch(SeekBar s) {}
+            });
+            sb.setMinimumHeight(UI.dp(EditorActivity.this, 40));
+            dot = showDot ? new SizeDot(EditorActivity.this) : null;
+            sink.set(cur);
+            show();
+        }
+
+        void set(int v, boolean moveSlider) {
+            cur = Math.max(min, Math.min(max, v));
+            sink.set(cur);
+            show();
+            if (moveSlider) sb.setProgress(valueToCurve(cur, min, max, curved));
+        }
+
+        void show() {
+            lbl.setText(name + " " + cur + suffix);
+            if (dot != null) dot.set(cur, max);
+        }
+
+        void addTo(boolean steppers) {
+            if (dot != null) {
+                dot.setLayoutParams(UI.lp(EditorActivity.this, 38, 38));
+                addOpt(dot);
+            }
+            addOpt(lbl);
+            if (steppers) addOpt(stepper("−", this, -1));
+            addOpt(sb);
+            sb.getLayoutParams().width = UI.dp(EditorActivity.this, 220);
+            if (steppers) addOpt(stepper("+", this, 1));
+        }
+    }
+
+    private View stepper(String text, final IntControl ic, final int delta) {
+        final TextView b = UI.button(this, text, UI.SURFACE3, UI.TEXT, null);
+        b.setTextSize(20);
+        b.setMinWidth(UI.dp(this, 40));
+        b.setPadding(UI.dp(this, 10), UI.dp(this, 2), UI.dp(this, 10), UI.dp(this, 2));
+        final Repeater rep = new Repeater(new Runnable() {
+            @Override public void run() { ic.set(ic.cur + delta, true); }
+        });
+        b.setOnTouchListener(new View.OnTouchListener() {
+            @Override public boolean onTouch(View v, MotionEvent e) {
+                int a = e.getActionMasked();
+                if (a == MotionEvent.ACTION_DOWN) {
+                    v.setPressed(true);
+                    rep.start();
+                } else if (a == MotionEvent.ACTION_UP || a == MotionEvent.ACTION_CANCEL) {
+                    v.setPressed(false);
+                    rep.stop();
+                }
+                return true;
+            }
+        });
+        return b;
+    }
+
+    /** One choice of a segmented group (the active one is filled with the accent colour). */
+    private TextView seg(String text, boolean on, View.OnClickListener l) {
+        TextView t = UI.button(this, text, on ? UI.ACCENT : UI.SURFACE3, on ? Color.WHITE : UI.TEXT, l);
+        t.setTextSize(13);
+        t.setPadding(UI.dp(this, 12), UI.dp(this, 8), UI.dp(this, 12), UI.dp(this, 8));
+        return t;
+    }
+
+    // ------------------------------------------------------------------ pens
+
+    private static final int[] PEN_STYLES = {Stroke.ST_NORMAL, Stroke.ST_MARKER, Stroke.ST_CALLIGRAPHY,
+            Stroke.ST_AIRBRUSH, Stroke.ST_WATERCOLOR, Stroke.ST_SPRAY, Stroke.ST_GRAPHITE, Stroke.ST_CHARCOAL};
+
+    private static boolean isPenStyle(int st) {
+        for (int p : PEN_STYLES) if (p == st) return true;
+        return false;
+    }
+
+    private static int defaultOpacity(int st) {
+        switch (st) {
+            case Stroke.ST_MARKER: return 55;
+            case Stroke.ST_WATERCOLOR: return 65;
+            case Stroke.ST_GRAPHITE: return 85;
+            case Stroke.ST_CHARCOAL: return 90;
+            default: return 100;
+        }
+    }
+
+    private String styleName(int st) {
+        switch (st) {
+            case Stroke.ST_MARKER: return getString(R.string.style_marker);
+            case Stroke.ST_CALLIGRAPHY: return getString(R.string.style_calligraphy);
+            case Stroke.ST_AIRBRUSH: return getString(R.string.style_airbrush);
+            case Stroke.ST_WATERCOLOR: return getString(R.string.style_watercolor);
+            case Stroke.ST_SPRAY: return getString(R.string.style_spray);
+            case Stroke.ST_GRAPHITE: return getString(R.string.style_graphite);
+            case Stroke.ST_CHARCOAL: return getString(R.string.style_charcoal);
+            default: return getString(R.string.style_normal);
+        }
+    }
+
+    private void addPenTypeButton() {
+        LinearLayout b = new LinearLayout(this);
+        b.setGravity(Gravity.CENTER_VERTICAL);
+        b.setBackground(UI.rounded(UI.SURFACE3, 10, this));
+        int ph = UI.dp(this, 8);
+        b.setPadding(ph, 0, ph + UI.dp(this, 4), 0);
+        IconView penIcon = UI.iconButton(this, IconView.PEN_TYPE, 34, null);
+        penIcon.setClickable(false); // taps go to the whole button
+        b.addView(penIcon, UI.lp(this, 34, 34));
+        TextView name = UI.bold(this, styleName(ts.brushStyle) + "  ▾", 13, UI.TEXT);
+        b.addView(name);
+        b.setClickable(true);
+        b.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { showPenTypes(); }
+        });
+        addOpt(b);
+        b.getLayoutParams().height = UI.dp(this, 38);
+    }
+
+    /** A small sample stroke drawn by the real engine, so the list shows what each pen feels like. */
+    private Bitmap penPreview(int style) {
+        int w = 300, h = 64;
+        int[] px = new int[w * h];
+        Stroke st = new Stroke(w, h);
+        st.begin(px, 0xFFEEF0FA, 20, false, true, false, null);
+        st.setStyle(style, defaultOpacity(style));
+        int lx = 24, ly = h / 2;
+        for (int x = 24; x <= w - 24; x += 6) {
+            int y = h / 2 + (int) Math.round(Math.sin((x - 24) / 28.0) * 11);
+            st.line(lx, ly, x, y);
+            lx = x;
+            ly = y;
+        }
+        st.finish();
+        Bitmap bm = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+        bm.setPixels(px, 0, w, 0, 0, w, h);
+        return bm;
+    }
+
+    private void showPenTypes() {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        final Dialog[] dlg = new Dialog[1];
+        for (final int st : PEN_STYLES) {
+            LinearLayout row = new LinearLayout(this);
+            row.setGravity(Gravity.CENTER_VERTICAL);
+            boolean cur = st == ts.brushStyle;
+            row.setBackground(cur ? UI.roundedStroke(UI.SURFACE2, UI.ACCENT, 2, 10, this) : UI.rounded(UI.SURFACE2, 10, this));
+            row.setPadding(UI.dp(this, 12), UI.dp(this, 6), UI.dp(this, 8), UI.dp(this, 6));
+            TextView name = UI.bold(this, styleName(st), 14, UI.TEXT);
+            row.addView(name, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+            ImageView iv = new ImageView(this);
+            iv.setImageBitmap(penPreview(st));
+            iv.setScaleType(ImageView.ScaleType.FIT_CENTER);
+            row.addView(iv, UI.lp(this, 150, 34));
+            row.setOnClickListener(new View.OnClickListener() {
+                @Override public void onClick(View v) {
+                    dlg[0].dismiss();
+                    ts.brushStyle = st;
+                    ts.brushOpacity = defaultOpacity(st);
+                    Settings.putInt(EditorActivity.this, "brushStyle", st);
+                    selectTool(ToolState.BRUSH);
+                }
+            });
+            LinearLayout.LayoutParams lp = UI.lp(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            lp.bottomMargin = UI.dp(this, 6);
+            box.addView(row, lp);
+        }
+        dlg[0] = UI.dialog(this, getString(R.string.pen_type), box, null, null, getString(R.string.close), null);
+        dlg[0].show();
+    }
+
+    private void addShadeModes() {
+        int[] modes = {ToolState.SHADE_DARK, ToolState.SHADE_LIGHT, ToolState.SHADE_HATCH};
+        int[] names = {R.string.shade_dark, R.string.shade_light, R.string.shade_hatch};
+        for (int i = 0; i < modes.length; i++) {
+            final int m = modes[i];
+            addOpt(seg(getString(names[i]), ts.shadeMode == m, new View.OnClickListener() {
+                @Override public void onClick(View v) {
+                    ts.shadeMode = m;
+                    updateOptions();
+                }
+            }));
+        }
+    }
+
+    // ------------------------------------------------------------------ bucket and smart select options
+
+    private void addBucketOptions() {
+        addOpt(seg(getString(R.string.fill_mode_normal), ts.fillMode == ToolState.FILL_NORMAL, new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                ts.fillMode = ToolState.FILL_NORMAL;
+                updateOptions();
+            }
+        }));
+        addOpt(seg(getString(R.string.fill_mode_inside), ts.fillMode == ToolState.FILL_INSIDE, new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                ts.fillMode = ToolState.FILL_INSIDE;
+                updateOptions();
+            }
+        }));
+        new IntControl(getString(R.string.fill_strength), 1, 100, ts.fillOpacity, false, false, "%", new IntSink() {
+            @Override public void set(int v) { ts.fillOpacity = v; }
+        }).addTo(false);
+        if (ts.fillMode == ToolState.FILL_INSIDE) {
+            addOpt(UI.bold(this, getString(R.string.edge_color), 13, UI.TEXT));
+            View sw = new View(this);
+            sw.setBackground(UI.roundedStroke(ts.edgeColor, 0xFFFFFFFF, 2, 8, this));
+            sw.setOnClickListener(new View.OnClickListener() {
+                @Override public void onClick(View v) { pickEdgeColor(); }
+            });
+            addOpt(sw);
+            sw.getLayoutParams().width = UI.dp(this, 38);
+            sw.getLayoutParams().height = UI.dp(this, 34);
+            new IntControl(getString(R.string.edge_range), 0, 128, ts.edgeTol, false, false, "", new IntSink() {
+                @Override public void set(int v) { ts.edgeTol = v; }
+            }).addTo(false);
+            new IntControl(getString(R.string.gap_close), 0, 4, ts.gap, false, false, "", new IntSink() {
+                @Override public void set(int v) { ts.gap = v; }
+            }).addTo(true);
+            addOpt(hint(R.string.hint_fill_inside));
+        } else {
+            new IntControl(getString(R.string.tolerance), 0, 128, ts.tolerance, false, false, "", new IntSink() {
+                @Override public void set(int v) { ts.tolerance = v; }
+            }).addTo(false);
+        }
+    }
+
+    private void pickEdgeColor() {
+        if (doc == null) return;
+        canvas.beginEyedrop(new CanvasView.EyedropListener() {
+            @Override public void onPicked(int argb) {
+                ts.edgeColor = argb | 0xFF000000;
+                updateOptions();
+            }
+            @Override public void onCancel() { updateOptions(); }
+        });
+        updateOptions();
+        UI.toast(this, R.string.pick_edge_hint);
+    }
+
+    private void addWandModes() {
+        addOpt(seg(getString(R.string.wand_whole), ts.wandObject, new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                ts.wandObject = true;
+                updateOptions();
+            }
+        }));
+        addOpt(seg(getString(R.string.wand_color), !ts.wandObject, new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                ts.wandObject = false;
+                updateOptions();
+            }
+        }));
+        if (!ts.wandObject) {
+            new IntControl(getString(R.string.tolerance), 0, 128, ts.wandTol, false, false, "", new IntSink() {
+                @Override public void set(int v) { ts.wandTol = v; }
+            }).addTo(false);
+        }
+    }
+
     private IconView optIcon(int icon, View.OnClickListener l) {
         IconView v = UI.iconButton(this, icon, 38, l);
-        v.setBackground(UI.rounded(UI.SURFACE3, 10, this));
+        v.setBackground(UI.ripple(UI.rounded(UI.SURFACE3, 10, this), 10, this));
         return v;
     }
 
@@ -1195,6 +1587,8 @@ public class EditorActivity extends Activity implements CanvasView.Host, Timelin
             case KeyEvent.KEYCODE_M: selectTool(ToolState.MOVE); return true;
             case KeyEvent.KEYCODE_H: selectTool(ToolState.HAND); return true;
             case KeyEvent.KEYCODE_I: selectTool(ToolState.PICKER); return true;
+            case KeyEvent.KEYCODE_W: selectTool(ToolState.WAND); return true;
+            case KeyEvent.KEYCODE_D: selectTool(ToolState.SHADE); return true;
             case KeyEvent.KEYCODE_PLUS:
             case KeyEvent.KEYCODE_EQUALS: canvas.zoomBy(1.5f); return true;
             case KeyEvent.KEYCODE_MINUS: canvas.zoomBy(1f / 1.5f); return true;

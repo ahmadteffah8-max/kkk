@@ -29,6 +29,7 @@ public class CoreSelfTest {
         testFrameSelector();
         testThumbAndShallowCopy();
         testThinAndHistoryBudget();
+        testNewFeatures();
         if (a.length > 0) writeSampleGif(a[0]);
         System.out.println(checks + " checks, " + failures + " failures");
         System.exit(failures == 0 ? 0 : 1);
@@ -619,6 +620,141 @@ public class CoreSelfTest {
         } catch (IOException e) {
             check(false, "shallow copy save: " + e);
         }
+    }
+
+    // ---------------------------------------------------------------- new: pens, shading, strength fill, inside fill, wand
+
+    static int[] outlineSquare(int w, int h, int x0, int y0, int x1, int y1) {
+        int[] px = new int[w * h];
+        for (int x = x0; x <= x1; x++) { px[y0 * w + x] = 0xFF000000; px[y1 * w + x] = 0xFF000000; }
+        for (int y = y0; y <= y1; y++) { px[y * w + x0] = 0xFF000000; px[y * w + x1] = 0xFF000000; }
+        return px;
+    }
+
+    static void testNewFeatures() {
+        int w = 24, h = 24;
+        // ---- fill strength
+        int[] bg = new int[w * h];
+        Arrays.fill(bg, 0xFFFFFFFF);
+        FloodFill.fill(bg, w, h, 1, 1, 0xFF000000, 0, 128, null);
+        int g = bg[0] & 255;
+        check(g >= 126 && g <= 128 && (bg[0] >>> 24) == 255, "fill at 50% strength blends over white: " + g);
+        int[] empty = new int[w * h];
+        FloodFill.fill(empty, w, h, 1, 1, 0xFFFF0000, 0, 100, null);
+        check((empty[0] >>> 24) == 100 && (empty[0] & 0xFFFFFF) == 0xFF0000, "fill strength on empty = alpha");
+        int[] full = new int[w * h];
+        FloodFill.fill(full, w, h, 1, 1, 0xFFFF0000, 0, null);
+        check(full[0] == 0xFFFF0000, "old fill signature still replaces");
+
+        // ---- fill inside an outline: many colours inside must not matter
+        int[] shape = outlineSquare(w, h, 4, 4, 15, 15);
+        for (int y = 5; y <= 14; y++) for (int x = 5; x <= 14; x++) shape[y * w + x] = x < 10 ? 0xFF2040FF : 0xFF20C040;
+        shape[8 * w + 8] = 0xFFFFFF00;
+        int[] target = shape.clone();
+        int[] r = FloodFill.fillInside(shape, target, w, h, 6, 6, 0xFFFF0000, 255, 0xFF000000, 40, 0, null);
+        check(r != null && r != FloodFill.LEAK && r != FloodFill.ON_EDGE && r[0] == 5 && r[1] == 5 && r[2] == 10 && r[3] == 10, "inside fill bounds");
+        boolean allRed = true;
+        for (int y = 5; y <= 14; y++) for (int x = 5; x <= 14; x++) allRed &= target[y * w + x] == 0xFFFF0000;
+        check(allRed, "inside fill repaints every inner colour");
+        check(target[4 * w + 4] == 0xFF000000 && target[0] == 0 && target[16 * w + 16] == 0, "outline and outside untouched");
+        // plain bucket would have stopped at the first colour
+        int[] plain = shape.clone();
+        FloodFill.fill(plain, w, h, 6, 6, 0xFFFF0000, 0, null);
+        check(plain[6 * w + 12] != 0xFFFF0000, "plain bucket is blocked by inner colours (why the new mode exists)");
+        check(FloodFill.fillInside(shape, shape.clone(), w, h, 4, 4, 0xFFFF0000, 255, 0xFF000000, 40, 0, null) == FloodFill.ON_EDGE, "tap on the outline");
+        check(FloodFill.fillInside(shape, shape.clone(), w, h, 1, 1, 0xFFFF0000, 255, 0xFF000000, 40, 0, null) == FloodFill.LEAK, "outside area reaches the border = leak");
+        // strength on inside fill
+        int[] t2 = shape.clone();
+        FloodFill.fillInside(shape, t2, w, h, 6, 6, 0xFF000000, 128, 0xFF000000, 40, 0, null);
+        check(t2[6 * w + 6] != shape[6 * w + 6] && (t2[6 * w + 6] >>> 24) == 255, "inside fill at partial strength blends");
+        // outline with a hole: leaks without gap sealing, closed with it
+        int[] holed = outlineSquare(w, h, 4, 4, 15, 15);
+        holed[10 * w + 4] = 0;
+        check(FloodFill.fillInside(holed, holed.clone(), w, h, 8, 8, 0xFFFF0000, 255, 0xFF000000, 40, 0, null) == FloodFill.LEAK, "hole leaks with gap 0");
+        int[] ht = holed.clone();
+        int[] rg = FloodFill.fillInside(holed, ht, w, h, 8, 8, 0xFFFF0000, 255, 0xFF000000, 40, 1, null);
+        check(rg != null && rg != FloodFill.LEAK && ht[8 * w + 8] == 0xFFFF0000 && ht[2 * w + 2] == 0, "gap sealing closes a 1px hole");
+        check(ht[5 * w + 5] == 0xFFFF0000 && ht[14 * w + 14] == 0xFFFF0000, "sealed fill reaches the corners");
+        // outline lives on another layer than the one being painted
+        int[] under = new int[w * h];
+        int[] rl = FloodFill.fillInside(shape, under, w, h, 6, 6, 0xFF00FFFF, 255, 0xFF000000, 40, 0, null);
+        check(rl != null && under[6 * w + 6] == 0xFF00FFFF && under[4 * w + 4] == 0, "paints a different layer than it reads");
+
+        // ---- magic wand
+        FloodFill.Region cr = FloodFill.region(shape, w, h, 6, 6, 0, false, null);
+        check(cr != null && cr.w == 5 && cr.h == 10 && cr.count == 49, "colour wand stops at colour change: count " + (cr == null ? -1 : cr.count));
+        check(cr != null && !cr.mask[(8 - cr.y) * cr.w + (8 - cr.x)], "wand mask excludes the odd pixel");
+        FloodFill.Region sr = FloodFill.region(shape, w, h, 6, 6, 0, true, null);
+        check(sr != null && sr.x == 4 && sr.y == 4 && sr.w == 12 && sr.h == 12 && sr.count == 144, "shape wand takes the whole connected shape");
+        FloodFill.Region bgr = FloodFill.region(shape, w, h, 1, 1, 0, true, null);
+        check(bgr != null && bgr.x == 0 && bgr.w == w && bgr.count == w * h - 144, "shape wand on empty selects the empty area: " + (bgr == null ? -1 : bgr.count));
+        check(FloodFill.region(shape, w, h, -1, 3, 0, true, null) == null, "wand outside canvas");
+
+        // ---- pen styles
+        int[] L = new int[32 * 32];
+        Stroke st = new Stroke(32, 32);
+        st.begin(L, 0xFF000000, 8, false, true, false, null);
+        st.setStyle(Stroke.ST_MARKER, 50);
+        st.line(4, 16, 28, 16);
+        st.line(4, 16, 28, 16); // overlap must not darken
+        st.finish();
+        int a1 = L[16 * 32 + 16] >>> 24;
+        check(a1 >= 126 && a1 <= 129, "marker opacity is flat even when overlapped: " + a1);
+        int[] L2 = new int[32 * 32];
+        st.begin(L2, 0xFF000000, 8, false, true, false, null);
+        st.setStyle(Stroke.ST_AIRBRUSH, 100);
+        st.stamp(16, 16);
+        st.finish();
+        check((L2[16 * 32 + 16] >>> 24) > (L2[16 * 32 + 19] >>> 24) && L2[16 * 32 + 19] != 0, "airbrush fades from the centre");
+        int[] L3 = new int[32 * 32];
+        st.begin(L3, 0xFF000000, 10, false, true, false, null);
+        st.setStyle(Stroke.ST_SPRAY, 100);
+        for (int i = 0; i < 6; i++) st.stamp(16, 16);
+        st.finish();
+        int dots = 0;
+        for (int v : L3) if (v != 0) dots++;
+        check(dots > 10 && dots < 100, "spray makes scattered dots: " + dots);
+        int[] L4 = new int[32 * 32];
+        st.begin(L4, 0xFF000000, 8, false, true, false, null);
+        st.setStyle(Stroke.ST_CALLIGRAPHY, 100);
+        st.line(6, 6, 6, 24);
+        Patch pv = st.finish();
+        int[] L5 = new int[32 * 32];
+        st.begin(L5, 0xFF000000, 8, false, true, false, null);
+        st.setStyle(Stroke.ST_CALLIGRAPHY, 100);
+        st.line(6, 6, 24, 6);
+        Patch ph = st.finish();
+        check(pv != null && ph != null && pv.w != pv.h && pv.w != ph.w, "calligraphy nib: vertical and horizontal strokes differ in width (" + pv.w + " vs " + ph.w + ")");
+        int[] L6 = new int[32 * 32];
+        st.begin(L6, 0xFF000000, 12, false, false, true, null);
+        st.setStyle(Stroke.ST_HATCH, 100);
+        st.stamp(16, 16);
+        st.finish();
+        int on = 0;
+        for (int v : L6) if (v != 0) on++;
+        check(on > 20 && on < 12 * 12, "hatch leaves gaps between lines: " + on);
+
+        // ---- shading darkens / lightens existing pixels only
+        int[] S = new int[32 * 32];
+        for (int y = 8; y < 24; y++) for (int x = 8; x < 24; x++) S[y * 32 + x] = 0xFF808080;
+        int[] S0 = S.clone();
+        st.begin(S, 0xFF000000, 8, false, true, false, null);
+        st.setStyle(Stroke.ST_SHADE_DARK, 50);
+        st.stamp(16, 16);
+        st.finish();
+        check((S[16 * 32 + 16] & 255) < 0x80 && (S[16 * 32 + 16] >>> 24) == 255, "shade darkens");
+        check(S[2 * 32 + 2] == 0, "shade leaves empty pixels alone");
+        int[] S2 = S0.clone();
+        st.begin(S2, 0xFF000000, 8, false, true, false, null);
+        st.setStyle(Stroke.ST_SHADE_LIGHT, 50);
+        st.stamp(16, 16);
+        st.finish();
+        check((S2[16 * 32 + 16] & 255) > 0x80, "shade lightens");
+        int[] N = new int[32 * 32];
+        st.begin(N, 0xFF112233, 6, false, true, false, null);
+        st.stamp(10, 10);
+        st.finish();
+        check((N[10 * 32 + 10]) == 0xFF112233, "begin() resets the style to normal");
     }
 
     static void testThinAndHistoryBudget() {

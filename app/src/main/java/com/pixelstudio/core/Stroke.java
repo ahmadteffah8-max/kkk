@@ -6,6 +6,11 @@ package com.pixelstudio.core;
  * The layer is restored from a pre-stroke copy, which also makes live shape preview possible.
  */
 public final class Stroke {
+    /** Pen styles (see {@link #setStyle}). */
+    public static final int ST_NORMAL = 0, ST_MARKER = 1, ST_CALLIGRAPHY = 2, ST_AIRBRUSH = 3, ST_WATERCOLOR = 4,
+            ST_SPRAY = 5, ST_GRAPHITE = 6, ST_CHARCOAL = 7, ST_HATCH = 8, ST_SHADE_DARK = 9, ST_SHADE_LIGHT = 10;
+    public static final int ST_COUNT = 11;
+
     private final int w, h;
     private final byte[] cov;
     private int[] before;
@@ -14,6 +19,9 @@ public final class Stroke {
     private int color;
     private boolean erase, aa, square;
     private int size = 1;
+    private int style = ST_NORMAL;
+    private int opacity = 255;
+    private long rng = 0x9E3779B97F4A7C15L;
     private int clipX0, clipY0, clipX1, clipY1;
 
     private int dx0, dy0, dx1, dy1; // dirty rect, exclusive end
@@ -40,6 +48,9 @@ public final class Stroke {
         this.erase = erase;
         this.aa = aa;
         this.square = square;
+        this.style = ST_NORMAL;
+        this.opacity = 255;
+        this.rng = 0x9E3779B97F4A7C15L ^ ((long) this.size * 2654435761L);
         if (clip == null) {
             clipX0 = 0; clipY0 = 0; clipX1 = w; clipY1 = h;
         } else {
@@ -47,6 +58,47 @@ public final class Stroke {
             clipX1 = Math.min(w, clip[2]); clipY1 = Math.min(h, clip[3]);
         }
         dirty = false;
+    }
+
+    /**
+     * Chooses the pen style and the stroke opacity (1..100). Call right after {@link #begin}.
+     * Opacity applies to the whole stroke at once (overlaps never darken), so a marker or a
+     * shading pass stays even.
+     */
+    public void setStyle(int style, int opacityPercent) {
+        this.style = (style < 0 || style >= ST_COUNT) ? ST_NORMAL : style;
+        int o = Math.max(1, Math.min(100, opacityPercent));
+        this.opacity = o >= 100 ? 255 : (o * 255 + 50) / 100;
+    }
+
+    private int rnd() {
+        rng ^= rng << 13;
+        rng ^= rng >>> 7;
+        rng ^= rng << 17;
+        return (int) (rng >>> 33); // 31 bits
+    }
+
+    /** Stable per-pixel noise 0..255 (so overlapping stamps keep the same grain). */
+    private static int grain(int x, int y) {
+        int h = x * 374761393 + y * 668265263;
+        h = (h ^ (h >>> 13)) * 1274126177;
+        return (h ^ (h >>> 16)) & 255;
+    }
+
+    private static int shade(int b, int c, boolean light) {
+        int a = b >>> 24;
+        if (a == 0) return b; // nothing to shade on empty pixels
+        int r = (b >> 16) & 255, g = (b >> 8) & 255, bl = b & 255;
+        if (light) {
+            r += ((255 - r) * c + 127) / 255;
+            g += ((255 - g) * c + 127) / 255;
+            bl += ((255 - bl) * c + 127) / 255;
+        } else {
+            r -= (r * c + 127) / 255;
+            g -= (g * c + 127) / 255;
+            bl -= (bl * c + 127) / 255;
+        }
+        return (a << 24) | (r << 16) | (g << 8) | bl;
     }
 
     public boolean isDirty() { return dirty; }
@@ -64,11 +116,14 @@ public final class Stroke {
     }
 
     private void setCov(int i, int c) {
+        if (opacity < 255) c = (c * opacity + 127) / 255;
         int old = cov[i] & 255;
         if (c <= old) return;
         cov[i] = (byte) c;
         int b = before[i];
-        if (erase) {
+        if (!erase && (style == ST_SHADE_DARK || style == ST_SHADE_LIGHT)) {
+            target[i] = shade(b, c, style == ST_SHADE_LIGHT);
+        } else if (erase) {
             int a = ((b >>> 24) * (255 - c) + 127) / 255;
             target[i] = a == 0 ? 0 : (a << 24) | (b & 0xFFFFFF);
         } else {
@@ -86,6 +141,11 @@ public final class Stroke {
         int ax1 = Math.min(ex, clipX1), ay1 = Math.min(ey, clipY1);
         if (ax1 <= ax0 || ay1 <= ay0) return;
         touch(ax0, ay0, ax1, ay1);
+        if (style != ST_NORMAL && !erase) {
+            if (style == ST_SPRAY) spray(cx, cy);
+            else styled(ax0, ay0, ax1, ay1, x0 + s / 2.0, y0 + s / 2.0);
+            return;
+        }
         if (!aa && (square || s <= 2)) {
             for (int y = ay0; y < ay1; y++) {
                 int row = y * w;
@@ -115,12 +175,100 @@ public final class Stroke {
         }
     }
 
+    private static double clamp01(double v) { return v < 0 ? 0 : (v > 1 ? 1 : v); }
+
+    private void styled(int ax0, int ay0, int ax1, int ay1, double ccx, double ccy) {
+        double r = size / 2.0;
+        for (int y = ay0; y < ay1; y++) {
+            int row = y * w;
+            double dy = y + 0.5 - ccy;
+            for (int x = ax0; x < ax1; x++) {
+                double dx = x + 0.5 - ccx;
+                int c = styleCoverage(x, y, dx, dy, r);
+                if (c > 0) setCov(row + x, c);
+            }
+        }
+    }
+
+    /** Coverage 0..255 of one pixel for the current pen style (dx, dy = offset from the stamp centre). */
+    private int styleCoverage(int x, int y, double dx, double dy, double r) {
+        double dist = Math.sqrt(dx * dx + dy * dy);
+        switch (style) {
+            case ST_MARKER: // flat chisel tip
+                return (Math.abs(dx) <= r && Math.abs(dy) <= Math.max(1.0, r * 0.5)) ? 255 : 0;
+            case ST_CALLIGRAPHY: { // 45 degree flat nib
+                double u = (dx + dy) * 0.70710678, v = (dy - dx) * 0.70710678;
+                double minor = Math.max(0.7, r * 0.25);
+                double t = Math.sqrt((u / r) * (u / r) + (v / minor) * (v / minor));
+                return (int) (255 * clamp01((1 - t) * minor + 0.5) + 0.5);
+            }
+            case ST_AIRBRUSH: {
+                double t = dist / r;
+                if (t >= 1) return 0;
+                double k = 1 - t;
+                return (int) (255 * k * k + 0.5);
+            }
+            case ST_WATERCOLOR: {
+                double t = dist / r;
+                if (t >= 1) return 0;
+                double k = Math.min(1.0, (1 - t) * 2.5);
+                double n = 0.8 + 0.2 * (grain(x >> 1, y >> 1) / 255.0);
+                return (int) (255 * k * n + 0.5);
+            }
+            case ST_GRAPHITE: {
+                double e = clamp01(r - dist + 0.5);
+                if (e <= 0) return 0;
+                int g = grain(x, y);
+                double k = g < 64 ? 0.35 : 0.65 + 0.35 * (g / 255.0);
+                return (int) (255 * e * k + 0.5);
+            }
+            case ST_CHARCOAL: {
+                double e = clamp01(r - dist + 0.5);
+                if (e <= 0) return 0;
+                int g = grain(x * 3 + 1, y * 3 + 7);
+                double k = g < 80 ? 0.12 : Math.min(1.0, (g / 255.0) * 1.3);
+                return (int) (255 * e * k + 0.5);
+            }
+            case ST_HATCH: {
+                if (dist > r) return 0;
+                int period = size >= 12 ? 8 : 4;
+                int m = ((x + y) % period + period) % period;
+                return m < period / 2 ? 255 : 0;
+            }
+            case ST_SHADE_DARK:
+            case ST_SHADE_LIGHT: {
+                if (!aa) return (square || dist <= r) ? 255 : 0; // pixel art: hard blocks
+                double t = dist / r;
+                if (t >= 1) return 0;
+                return (int) (255 * Math.min(1.0, (1 - t) * 2.0) + 0.5);
+            }
+            default:
+                return 0;
+        }
+    }
+
+    private void spray(int cx, int cy) {
+        double r = size / 2.0;
+        int n = (int) Math.max(3, Math.min(120, r * r * 0.9));
+        for (int k = 0; k < n; k++) {
+            double ang = (rnd() / 2147483648.0) * 2 * Math.PI;
+            double d = r * Math.sqrt(rnd() / 2147483648.0);
+            int px = (int) Math.floor(cx + 0.5 + d * Math.cos(ang));
+            int py = (int) Math.floor(cy + 0.5 + d * Math.sin(ang));
+            if (px < clipX0 || px >= clipX1 || py < clipY0 || py >= clipY1) continue;
+            touch(px, py, px + 1, py + 1);
+            setCov(py * w + px, 140 + (rnd() % 116));
+        }
+    }
+
     /** Stamps along a line from (x0,y0) to (x1,y1). */
     public void line(int x0, int y0, int x1, int y1) {
         int dx = x1 - x0, dy = y1 - y0;
         int n = Math.max(Math.abs(dx), Math.abs(dy));
         if (n == 0) { stamp(x0, y0); return; }
         int step = aa ? Math.max(1, size / 4) : (size > 8 ? size / 4 : 1);
+        if (style == ST_SPRAY) step = Math.max(1, size / 5);
+        else if (style != ST_NORMAL) step = Math.max(1, size / 8);
         for (int k = 0; k < n; k += step) {
             stamp((int) Math.round(x0 + dx * (double) k / n), (int) Math.round(y0 + dy * (double) k / n));
         }

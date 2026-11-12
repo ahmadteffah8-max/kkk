@@ -2,10 +2,13 @@ package com.pixelstudio.app;
 
 import android.app.Dialog;
 import android.content.Context;
+import android.content.res.ColorStateList;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.ColorDrawable;
+import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
+import android.graphics.drawable.RippleDrawable;
 import android.text.InputType;
 import android.view.Gravity;
 import android.view.View;
@@ -49,6 +52,14 @@ public final class UI {
         return g;
     }
 
+    /** Wraps a background so a touch shows a soft ripple inside the rounded shape (content may be null). */
+    public static Drawable ripple(Drawable content, float radiusDp, Context c) {
+        GradientDrawable mask = new GradientDrawable();
+        mask.setColor(0xFFFFFFFF);
+        mask.setCornerRadius(dp(c, radiusDp));
+        return new RippleDrawable(ColorStateList.valueOf(0x33FFFFFF), content, mask);
+    }
+
     public static TextView label(Context c, CharSequence text, float sp, int color) {
         TextView t = new TextView(c);
         t.setText(text);
@@ -72,7 +83,7 @@ public final class UI {
         t.setGravity(Gravity.CENTER);
         int ph = dp(c, 16), pv = dp(c, 10);
         t.setPadding(ph, pv, ph, pv);
-        t.setBackground(rounded(fill, 10, c));
+        t.setBackground(ripple(rounded(fill, 10, c), 10, c));
         t.setClickable(true);
         t.setOnClickListener(l);
         return t;
